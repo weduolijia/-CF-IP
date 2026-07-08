@@ -34,25 +34,16 @@ EXTRA_SOURCES = [
     if source.strip()
 ]
 
-# Asia-Pacific-ish scope based on what /api/countries currently exposes.
-# Edit this set if you want a narrower or wider feed.
+# Target scope. Final output is also filtered by checked exit country.
 APAC_CODES = {
-    "AU",
-    "BD",
-    "CN",
     "HK",
-    "ID",
-    "IN",
     "JP",
-    "KG",
     "KR",
-    "KZ",
+    "MO",
     "MY",
-    "PH",
     "SG",
-    "TH",
-    "UZ",
-    "VN",
+    "TW",
+    "US",
 }
 
 COMMON_CF_PORTS = {
@@ -84,10 +75,13 @@ COUNTRY_NAME_TO_CODE = {
     "JAPAN": "JP",
     "KAZAKHSTAN": "KZ",
     "KYRGYZSTAN": "KG",
+    "MACAO": "MO",
+    "MACAU": "MO",
     "MALAYSIA": "MY",
     "PHILIPPINES": "PH",
     "SINGAPORE": "SG",
     "SOUTH KOREA": "KR",
+    "TAIWAN": "TW",
     "THAILAND": "TH",
     "UNITED STATES": "US",
     "UZBEKISTAN": "UZ",
@@ -228,7 +222,7 @@ def add_extra_source_rows(rows):
             country = country.upper()
             if country in APAC_CODES:
                 add_row(rows, ip, port, country)
-        print(f"extra source {source}: +{len(rows) - before} APAC rows", flush=True)
+        print(f"extra source {source}: +{len(rows) - before} target rows", flush=True)
 
 
 def score_result(cn_api_latency):
@@ -414,6 +408,8 @@ def enrich_cn_api_latencies(results):
 def select_top_results(results):
     by_country = {}
     for result in sorted(results, key=result_sort_key):
+        if result.output_country not in APAC_CODES:
+            continue
         by_country.setdefault(result.output_country, []).append(result)
 
     top_results = [
@@ -489,7 +485,7 @@ def write_json(path, payload):
 
 def main():
     print("stage 1/5: pull IP sources")
-    print("stage 2/5: merge and filter APAC rows")
+    print("stage 2/5: merge and filter target rows")
     rows, total_hint = collect_rows()
 
     write_lines(OUTPUT_PATH, [row.line for row in sorted(rows, key=row_sort_key)])

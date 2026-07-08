@@ -1,6 +1,6 @@
-# CFIP APAC Feed
+# CFIP Target Region Feed
 
-Generate an Asia-Pacific ProxyIP feed from `https://cfip.wxgqlfx.fun`.
+Generate a filtered ProxyIP feed from `https://cfip.wxgqlfx.fun`.
 
 Pipeline:
 
@@ -16,7 +16,7 @@ ip:port#CC
 
 The script writes:
 
-- `all.txt`: merged APAC feed.
+- `all.txt`: merged target-region feed.
 - `raw.all`: final feed, up to 10 API-latency-ranked entries per exit country/region.
 - `top10.txt`: same text output as `raw.all`.
 - `top10.json`: structured metadata.
@@ -57,8 +57,8 @@ CN_TCPING_WORKERS=8
 CN_TCPING_TIMEOUT=15
 ```
 
-The default country/region scope is controlled by `APAC_CODES` in `fetch_apac.py`.
-Remote `EXTRA_SOURCES` should use `ip:port#CC` lines; only APAC country codes are kept.
+The default country/region scope is controlled by `APAC_CODES` in `fetch_apac.py`; the current scope is `TW`, `HK`, `MO`, `SG`, `MY`, `KR`, `JP`, and `US`.
+Remote `EXTRA_SOURCES` should use `ip:port#CC` lines; only target country/region codes are kept.
 By default, availability is checked with the same style as `check.proxyip.cmliussss.net`: the script calls a Cloudflare-side ProxyIP check API.
 After that, only rows that also return a latency from the configured TCPing API are kept.
-Final ranking uses `cn_api_latency_ms` only.
+Final ranking uses `cn_api_latency_ms` only, and final output is filtered again by the checked exit country/region.
