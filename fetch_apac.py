@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -10,6 +11,11 @@ from pathlib import Path
 BASE_URL = os.environ.get("CFIP_BASE_URL", "https://cfip.wxgqlfx.fun")
 OUTPUT_PATH = Path(os.environ.get("OUTPUT_PATH", "all.txt"))
 LIMIT = int(os.environ.get("CFIP_LIMIT", "10000"))
+EXTRA_SOURCES = [
+    source.strip()
+    for source in os.environ.get("EXTRA_SOURCES", "https://zip.cm.edu.kg/all.txt").split(",")
+    if source.strip()
+]
 
 # Asia-Pacific-ish scope based on what /api/countries currently exposes.
 # Edit this set if you want a narrower or wider feed.
@@ -48,6 +54,8 @@ COMMON_CF_PORTS = {
     "8880",
 }
 
+APAC_LINE_RE = re.compile(r"^\s*([0-9A-Fa-f:.]+):(\d{1,5})#([A-Za-z0-9/_-]+)")
+
 
 def request_json(path, method="GET", body=None, retries=3):
     data = None
@@ -82,6 +90,34 @@ def sort_key(line):
     ip_parts = tuple(int(part) if part.isdigit() else 999 for part in ip.split("."))
     port_key = int(port) if port.isdigit() else 999999
     return ip_parts, port_key, country
+
+
+def fetch_text(url, retries=3):
+    req = urllib.request.Request(url, headers={"User-Agent": "cfip-apac-feed/1.0"})
+    last_error = None
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                return response.read().decode("utf-8", errors="replace")
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_error = exc
+            time.sleep(0.8 * (attempt + 1))
+    raise RuntimeError(f"request failed for {url}: {last_error}")
+
+
+def add_extra_source_rows(rows):
+    for source in EXTRA_SOURCES:
+        before = len(rows)
+        text = fetch_text(source)
+        for line in text.splitlines():
+            match = APAC_LINE_RE.match(line)
+            if not match:
+                continue
+            ip, port, country = match.groups()
+            country = country.upper()
+            if country in APAC_CODES:
+                rows.add(f"{ip}:{port}#{country}")
+        print(f"extra source {source}: +{len(rows) - before} APAC rows", flush=True)
 
 
 def main():
@@ -131,6 +167,8 @@ def main():
                 add_proxy(rows, proxy, code)
             time.sleep(0.03)
         print(f"{code}: +{len(rows) - before} rows after backfill", flush=True)
+
+    add_extra_source_rows(rows)
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text("\n".join(sorted(rows, key=sort_key)) + "\n", encoding="utf-8")
