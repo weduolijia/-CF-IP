@@ -14,6 +14,7 @@ from pathlib import Path
 
 BASE_URL = os.environ.get("CFIP_BASE_URL", "https://cfip.wxgqlfx.fun")
 OUTPUT_PATH = Path(os.environ.get("OUTPUT_PATH", "all.txt"))
+RAW_OUTPUT_PATH = Path(os.environ.get("RAW_OUTPUT_PATH", "raw.all"))
 TOP_OUTPUT_PATH = Path(os.environ.get("TOP_OUTPUT_PATH", "top10.txt"))
 TOP_JSON_PATH = Path(os.environ.get("TOP_JSON_PATH", "top10.json"))
 LIMIT = int(os.environ.get("CFIP_LIMIT", "10000"))
@@ -27,8 +28,6 @@ ENABLE_CN_API_LATENCY = os.environ.get("ENABLE_CN_API_LATENCY", "1") != "0"
 CN_TCPING_API = os.environ.get("CN_TCPING_API", "https://v2.xxapi.cn/api/tcping")
 CN_TCPING_WORKERS = int(os.environ.get("CN_TCPING_WORKERS", "8"))
 CN_TCPING_TIMEOUT = float(os.environ.get("CN_TCPING_TIMEOUT", "15"))
-CN_API_SCORE_WEIGHT = float(os.environ.get("CN_API_SCORE_WEIGHT", "1"))
-CN_API_MISSING_PENALTY = int(os.environ.get("CN_API_MISSING_PENALTY", "10000"))
 EXTRA_SOURCES = [
     source.strip()
     for source in os.environ.get("EXTRA_SOURCES", "https://zip.cm.edu.kg/all.txt").split(",")
@@ -107,17 +106,8 @@ class ProbeResult:
     @property
     def line(self):
         parts = [f"{self.ip}:{self.port}", self.country]
-        if self.cf_latency_ms is not None:
-            parts.append(f"cf={self.cf_latency_ms}ms")
-        if self.ct_latency_ms is not None:
-            parts.append(f"ct={self.ct_latency_ms}ms")
-        if self.cu_latency_ms is not None:
-            parts.append(f"cu={self.cu_latency_ms}ms")
-        if self.cm_latency_ms is not None:
-            parts.append(f"cm={self.cm_latency_ms}ms")
         if self.cn_api_latency_ms is not None:
             parts.append(f"cn={self.cn_api_latency_ms}ms")
-        parts.append(f"score={self.score}")
         return "#".join(parts)
 
 
@@ -184,7 +174,13 @@ def row_sort_key(row):
 
 
 def result_sort_key(result):
-    return result.country, result.score, result.cf_latency_ms or 999999, ip_sort_parts(result.ip), result.port
+    return (
+        result.country,
+        result.cn_api_latency_ms if result.cn_api_latency_ms is not None else 999999,
+        result.cf_latency_ms if result.cf_latency_ms is not None else 999999,
+        ip_sort_parts(result.ip),
+        result.port,
+    )
 
 
 def add_extra_source_rows(rows):
@@ -202,32 +198,8 @@ def add_extra_source_rows(rows):
         print(f"extra source {source}: +{len(rows) - before} APAC rows", flush=True)
 
 
-def score_result(
-    cf_latency,
-    ct_latency=None,
-    cu_latency=None,
-    cm_latency=None,
-    cn_api_latency=None,
-):
-    # Lower is better. CF latency validates the ProxyIP path; CN API latency is
-    # an external mainland TCPing viewpoint and can be weighted independently.
-    score = 0.0
-    used_any = False
-    if cf_latency is not None:
-        score += cf_latency
-        used_any = True
-    for latency in (ct_latency, cu_latency, cm_latency):
-        if latency is not None:
-            score += latency
-            used_any = True
-    if cn_api_latency is not None:
-        score += cn_api_latency * CN_API_SCORE_WEIGHT
-        used_any = True
-    elif ENABLE_CN_API_LATENCY:
-        score += CN_API_MISSING_PENALTY
-    if not used_any:
-        return 999999
-    return int(score)
+def score_result(cn_api_latency):
+    return cn_api_latency if cn_api_latency is not None else 999999
 
 
 def parse_latency_ms(value):
@@ -265,7 +237,7 @@ def test_tcp_latency(row):
         port=row.port,
         country=row.country,
         cf_latency_ms=latency_ms,
-        score=score_result(latency_ms),
+        score=999999,
     )
 
 
@@ -295,7 +267,7 @@ def test_proxyip_api_latency(row):
         port=row.port,
         country=row.country,
         cf_latency_ms=cf_latency,
-        score=score_result(cf_latency),
+        score=999999,
         colo=str(payload.get("colo", "")).strip(),
         exit_ip=str(exit_data.get("ip", "")).strip(),
         exit_country=str(exit_data.get("country", "")).strip(),
@@ -325,7 +297,7 @@ def test_cn_tcping_api(row):
         port=row.port,
         country=row.country,
         cf_latency_ms=None,
-        score=score_result(None, cn_api_latency=latency),
+        score=score_result(latency),
         cn_api_latency_ms=latency,
         cn_api_source=CN_TCPING_API,
     )
@@ -367,8 +339,8 @@ def probe_candidates(rows):
 
 
 def enrich_cn_api_latencies(results):
-    if not ENABLE_CN_API_LATENCY or not results or SPEED_TEST_MODE == "cn_tcping_api":
-        return results
+    if not ENABLE_CN_API_LATENCY or not results:
+        return []
 
     print(
         f"CN API tcping latency testing {len(results)} available rows "
@@ -376,6 +348,7 @@ def enrich_cn_api_latencies(results):
         flush=True,
     )
     by_key = {(result.ip, result.port, result.country): result for result in results}
+    enriched = []
     rows = [
         ProxyRow(ip=result.ip, port=result.port, country=result.country)
         for result in results
@@ -395,19 +368,14 @@ def enrich_cn_api_latencies(results):
                     current,
                     cn_api_latency_ms=cn_result.cn_api_latency_ms,
                     cn_api_source=cn_result.cn_api_source,
-                    score=score_result(
-                        current.cf_latency_ms,
-                        current.ct_latency_ms,
-                        current.cu_latency_ms,
-                        current.cm_latency_ms,
-                        cn_result.cn_api_latency_ms,
-                    ),
+                    score=score_result(cn_result.cn_api_latency_ms),
                 )
+                enriched.append(by_key[key])
                 updated += 1
             if completed % 100 == 0 or completed == len(future_map):
                 print(f"  CN API tested {completed}/{len(future_map)}, updated={updated}", flush=True)
 
-    return list(by_key.values())
+    return enriched
 
 
 def select_top_results(results):
@@ -501,8 +469,10 @@ def main():
 
     print("stage 5/5: score and keep top entries per country/region")
     top_results = select_top_results(results)
+    write_lines(RAW_OUTPUT_PATH, [result.line for result in sorted(top_results, key=result_sort_key)])
     write_lines(TOP_OUTPUT_PATH, [result.line for result in sorted(top_results, key=result_sort_key)])
     write_json(TOP_JSON_PATH, [asdict(result) for result in sorted(top_results, key=result_sort_key)])
+    print(f"wrote {len(top_results)} final rows to {RAW_OUTPUT_PATH}")
     print(f"wrote {len(top_results)} top rows to {TOP_OUTPUT_PATH}")
     print(f"wrote {len(top_results)} top JSON rows to {TOP_JSON_PATH}")
 
