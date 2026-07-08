@@ -29,10 +29,13 @@ CFIP_LIMIT=10000
 EXTRA_SOURCES=https://zip.cm.edu.kg/all.txt
 TOP_PER_COUNTRY=10
 ENABLE_SPEED_TEST=1
-SPEED_TEST_TIMEOUT=2.0
-SPEED_TEST_WORKERS=80
+SPEED_TEST_MODE=proxyip_api
+SPEED_TEST_TIMEOUT=30
+SPEED_TEST_WORKERS=20
+PROXYIP_CHECK_API=https://api.090227.xyz/check
 ```
 
 The default country/region scope is controlled by `APAC_CODES` in `fetch_apac.py`.
 Remote `EXTRA_SOURCES` should use `ip:port#CC` lines; only APAC country codes are kept.
-Latency is measured from the runner that executes the script, so GitHub Actions latency represents GitHub's network, not every user's local route.
+By default, latency is measured with the same style as `check.proxyip.cmliussss.net`: the script calls a Cloudflare-side ProxyIP check API and ranks successful results by `responseTime`.
+Set `SPEED_TEST_MODE=tcp` to use local TCP connect latency from the runner instead.

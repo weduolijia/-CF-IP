@@ -5,6 +5,7 @@ import socket
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -17,8 +18,10 @@ TOP_OUTPUT_PATH = Path(os.environ.get("TOP_OUTPUT_PATH", "top10.txt"))
 LIMIT = int(os.environ.get("CFIP_LIMIT", "10000"))
 TOP_PER_COUNTRY = int(os.environ.get("TOP_PER_COUNTRY", "10"))
 ENABLE_SPEED_TEST = os.environ.get("ENABLE_SPEED_TEST", "1") != "0"
-SPEED_TEST_TIMEOUT = float(os.environ.get("SPEED_TEST_TIMEOUT", "2.0"))
-SPEED_TEST_WORKERS = int(os.environ.get("SPEED_TEST_WORKERS", "80"))
+SPEED_TEST_MODE = os.environ.get("SPEED_TEST_MODE", "proxyip_api")
+SPEED_TEST_TIMEOUT = float(os.environ.get("SPEED_TEST_TIMEOUT", "30"))
+SPEED_TEST_WORKERS = int(os.environ.get("SPEED_TEST_WORKERS", "20"))
+PROXYIP_CHECK_API = os.environ.get("PROXYIP_CHECK_API", "https://api.090227.xyz/check")
 EXTRA_SOURCES = [
     source.strip()
     for source in os.environ.get("EXTRA_SOURCES", "https://zip.cm.edu.kg/all.txt").split(",")
@@ -175,6 +178,31 @@ def test_tcp_latency(row):
         return None
 
 
+def test_proxyip_api_latency(row):
+    query = urllib.parse.urlencode({"proxyip": f"{row.ip}:{row.port}"})
+    url = f"{PROXYIP_CHECK_API}?{query}"
+    req = urllib.request.Request(url, headers={"User-Agent": "cfip-apac-feed/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=SPEED_TEST_TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return None
+
+    if not payload.get("success"):
+        return None
+    try:
+        latency_ms = int(float(payload.get("responseTime")))
+    except (TypeError, ValueError):
+        return None
+    return ProxyRow(row.ip, row.port, row.country, latency_ms)
+
+
+def test_latency(row):
+    if SPEED_TEST_MODE == "tcp":
+        return test_tcp_latency(row)
+    return test_proxyip_api_latency(row)
+
+
 def select_top_rows(rows):
     if not ENABLE_SPEED_TEST:
         print("speed test disabled; top file will use sorted first rows", flush=True)
@@ -188,13 +216,13 @@ def select_top_rows(rows):
         ]
 
     print(
-        f"speed testing {len(rows)} rows "
+        f"speed testing {len(rows)} rows with {SPEED_TEST_MODE} "
         f"(workers={SPEED_TEST_WORKERS}, timeout={SPEED_TEST_TIMEOUT}s)",
         flush=True,
     )
     tested = []
     with ThreadPoolExecutor(max_workers=SPEED_TEST_WORKERS) as executor:
-        future_map = {executor.submit(test_tcp_latency, row): row for row in rows}
+        future_map = {executor.submit(test_latency, row): row for row in rows}
         completed = 0
         for future in as_completed(future_map):
             completed += 1
