@@ -8,13 +8,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
 BASE_URL = os.environ.get("CFIP_BASE_URL", "https://cfip.wxgqlfx.fun")
 OUTPUT_PATH = Path(os.environ.get("OUTPUT_PATH", "all.txt"))
 TOP_OUTPUT_PATH = Path(os.environ.get("TOP_OUTPUT_PATH", "top10.txt"))
+TOP_JSON_PATH = Path(os.environ.get("TOP_JSON_PATH", "top10.json"))
 LIMIT = int(os.environ.get("CFIP_LIMIT", "10000"))
 TOP_PER_COUNTRY = int(os.environ.get("TOP_PER_COUNTRY", "10"))
 ENABLE_SPEED_TEST = os.environ.get("ENABLE_SPEED_TEST", "1") != "0"
@@ -73,17 +74,41 @@ class ProxyRow:
     ip: str
     port: int
     country: str
-    latency_ms: int | None = None
 
     @property
     def line(self):
         return f"{self.ip}:{self.port}#{self.country}"
 
+
+@dataclass(frozen=True)
+class ProbeResult:
+    ip: str
+    port: int
+    country: str
+    cf_latency_ms: int | None
+    score: int
+    colo: str = ""
+    exit_ip: str = ""
+    exit_country: str = ""
+    exit_asn: str = ""
+    exit_org: str = ""
+    ct_latency_ms: int | None = None
+    cu_latency_ms: int | None = None
+    cm_latency_ms: int | None = None
+
     @property
-    def latency_line(self):
-        if self.latency_ms is None:
-            return self.line
-        return f"{self.line}#{self.latency_ms}ms"
+    def line(self):
+        parts = [f"{self.ip}:{self.port}", self.country]
+        if self.cf_latency_ms is not None:
+            parts.append(f"cf={self.cf_latency_ms}ms")
+        if self.ct_latency_ms is not None:
+            parts.append(f"ct={self.ct_latency_ms}ms")
+        if self.cu_latency_ms is not None:
+            parts.append(f"cu={self.cu_latency_ms}ms")
+        if self.cm_latency_ms is not None:
+            parts.append(f"cm={self.cm_latency_ms}ms")
+        parts.append(f"score={self.score}")
+        return "#".join(parts)
 
 
 def request_json(path, method="GET", body=None, retries=3):
@@ -144,13 +169,12 @@ def ip_sort_parts(ip):
     return tuple(int(part) if part.isdigit() else 999 for part in ip.split("."))
 
 
-def sort_key(row):
+def row_sort_key(row):
     return row.country, ip_sort_parts(row.ip), row.port
 
 
-def latency_sort_key(row):
-    latency = row.latency_ms if row.latency_ms is not None else 999999
-    return row.country, latency, ip_sort_parts(row.ip), row.port
+def result_sort_key(result):
+    return result.country, result.score, result.cf_latency_ms or 999999, ip_sort_parts(result.ip), result.port
 
 
 def add_extra_source_rows(rows):
@@ -168,14 +192,40 @@ def add_extra_source_rows(rows):
         print(f"extra source {source}: +{len(rows) - before} APAC rows", flush=True)
 
 
+def score_result(cf_latency, ct_latency=None, cu_latency=None, cm_latency=None):
+    # Lower is better. CF latency is the baseline because it is always available
+    # after ProxyIP validation. Three-network latencies can be added later.
+    score = cf_latency if cf_latency is not None else 999999
+    for latency in (ct_latency, cu_latency, cm_latency):
+        if latency is not None:
+            score += latency
+    return int(score)
+
+
+def first_exit(payload):
+    probe_results = payload.get("probe_results") or {}
+    for stack in ("ipv4", "ipv6"):
+        probe = probe_results.get(stack) or {}
+        if probe.get("ok") and probe.get("exit"):
+            return probe["exit"]
+    return {}
+
+
 def test_tcp_latency(row):
     start = time.perf_counter()
     try:
         with socket.create_connection((row.ip, row.port), timeout=SPEED_TEST_TIMEOUT):
             latency_ms = int((time.perf_counter() - start) * 1000)
-            return ProxyRow(row.ip, row.port, row.country, latency_ms)
     except OSError:
         return None
+
+    return ProbeResult(
+        ip=row.ip,
+        port=row.port,
+        country=row.country,
+        cf_latency_ms=latency_ms,
+        score=score_result(latency_ms),
+    )
 
 
 def test_proxyip_api_latency(row):
@@ -191,58 +241,73 @@ def test_proxyip_api_latency(row):
     if not payload.get("success"):
         return None
     try:
-        latency_ms = int(float(payload.get("responseTime")))
+        cf_latency = int(float(payload.get("responseTime")))
     except (TypeError, ValueError):
         return None
-    return ProxyRow(row.ip, row.port, row.country, latency_ms)
+
+    exit_data = first_exit(payload)
+    exit_asn = str(exit_data.get("asn", "")).strip()
+    exit_org = str(exit_data.get("asOrganization") or exit_data.get("org") or "").strip()
+
+    return ProbeResult(
+        ip=row.ip,
+        port=row.port,
+        country=row.country,
+        cf_latency_ms=cf_latency,
+        score=score_result(cf_latency),
+        colo=str(payload.get("colo", "")).strip(),
+        exit_ip=str(exit_data.get("ip", "")).strip(),
+        exit_country=str(exit_data.get("country", "")).strip(),
+        exit_asn=exit_asn,
+        exit_org=exit_org,
+    )
 
 
-def test_latency(row):
+def test_candidate(row):
     if SPEED_TEST_MODE == "tcp":
         return test_tcp_latency(row)
     return test_proxyip_api_latency(row)
 
 
-def select_top_rows(rows):
+def probe_candidates(rows):
     if not ENABLE_SPEED_TEST:
-        print("speed test disabled; top file will use sorted first rows", flush=True)
-        by_country = {}
-        for row in sorted(rows, key=sort_key):
-            by_country.setdefault(row.country, []).append(row)
+        print("speed test disabled; treating sorted rows as available", flush=True)
         return [
-            row
-            for country in sorted(by_country)
-            for row in by_country[country][:TOP_PER_COUNTRY]
+            ProbeResult(row.ip, row.port, row.country, None, 999999)
+            for row in sorted(rows, key=row_sort_key)
         ]
 
     print(
-        f"speed testing {len(rows)} rows with {SPEED_TEST_MODE} "
+        f"availability + latency testing {len(rows)} rows with {SPEED_TEST_MODE} "
         f"(workers={SPEED_TEST_WORKERS}, timeout={SPEED_TEST_TIMEOUT}s)",
         flush=True,
     )
-    tested = []
+    results = []
     with ThreadPoolExecutor(max_workers=SPEED_TEST_WORKERS) as executor:
-        future_map = {executor.submit(test_latency, row): row for row in rows}
+        future_map = {executor.submit(test_candidate, row): row for row in rows}
         completed = 0
         for future in as_completed(future_map):
             completed += 1
             result = future.result()
             if result is not None:
-                tested.append(result)
+                results.append(result)
             if completed % 100 == 0 or completed == len(future_map):
-                print(f"  tested {completed}/{len(future_map)}, alive={len(tested)}", flush=True)
+                print(f"  tested {completed}/{len(future_map)}, available={len(results)}", flush=True)
+    return results
 
+
+def select_top_results(results):
     by_country = {}
-    for row in sorted(tested, key=latency_sort_key):
-        by_country.setdefault(row.country, []).append(row)
+    for result in sorted(results, key=result_sort_key):
+        by_country.setdefault(result.country, []).append(result)
 
-    top_rows = [
-        row
+    top_results = [
+        result
         for country in sorted(by_country)
-        for row in by_country[country][:TOP_PER_COUNTRY]
+        for result in by_country[country][:TOP_PER_COUNTRY]
     ]
-    print(f"selected {len(top_rows)} top rows from {len(tested)} reachable rows", flush=True)
-    return top_rows
+    print(f"selected {len(top_results)} top rows from {len(results)} available rows", flush=True)
+    return top_results
 
 
 def collect_rows():
@@ -302,15 +367,29 @@ def write_lines(path, lines):
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_json(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def main():
+    print("stage 1/5: pull IP sources")
+    print("stage 2/5: merge and filter APAC rows")
     rows, total_hint = collect_rows()
 
-    write_lines(OUTPUT_PATH, [row.line for row in sorted(rows, key=sort_key)])
+    write_lines(OUTPUT_PATH, [row.line for row in sorted(rows, key=row_sort_key)])
     print(f"wrote {len(rows)} unique rows to {OUTPUT_PATH}")
 
-    top_rows = select_top_rows(rows)
-    write_lines(TOP_OUTPUT_PATH, [row.latency_line for row in sorted(top_rows, key=latency_sort_key)])
-    print(f"wrote {len(top_rows)} top rows to {TOP_OUTPUT_PATH}")
+    print("stage 3/5: availability check")
+    print("stage 4/5: latency test")
+    results = probe_candidates(rows)
+
+    print("stage 5/5: score and keep top entries per country/region")
+    top_results = select_top_results(results)
+    write_lines(TOP_OUTPUT_PATH, [result.line for result in sorted(top_results, key=result_sort_key)])
+    write_json(TOP_JSON_PATH, [asdict(result) for result in sorted(top_results, key=result_sort_key)])
+    print(f"wrote {len(top_results)} top rows to {TOP_OUTPUT_PATH}")
+    print(f"wrote {len(top_results)} top JSON rows to {TOP_JSON_PATH}")
 
     if total_hint is not None:
         print(f"api totalProxies hint: {total_hint}")
