@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 
@@ -23,6 +23,12 @@ SPEED_TEST_MODE = os.environ.get("SPEED_TEST_MODE", "proxyip_api")
 SPEED_TEST_TIMEOUT = float(os.environ.get("SPEED_TEST_TIMEOUT", "30"))
 SPEED_TEST_WORKERS = int(os.environ.get("SPEED_TEST_WORKERS", "20"))
 PROXYIP_CHECK_API = os.environ.get("PROXYIP_CHECK_API", "https://api.090227.xyz/check")
+ENABLE_CN_API_LATENCY = os.environ.get("ENABLE_CN_API_LATENCY", "1") != "0"
+CN_TCPING_API = os.environ.get("CN_TCPING_API", "https://v2.xxapi.cn/api/tcping")
+CN_TCPING_WORKERS = int(os.environ.get("CN_TCPING_WORKERS", "8"))
+CN_TCPING_TIMEOUT = float(os.environ.get("CN_TCPING_TIMEOUT", "15"))
+CN_API_SCORE_WEIGHT = float(os.environ.get("CN_API_SCORE_WEIGHT", "1"))
+CN_API_MISSING_PENALTY = int(os.environ.get("CN_API_MISSING_PENALTY", "10000"))
 EXTRA_SOURCES = [
     source.strip()
     for source in os.environ.get("EXTRA_SOURCES", "https://zip.cm.edu.kg/all.txt").split(",")
@@ -95,6 +101,8 @@ class ProbeResult:
     ct_latency_ms: int | None = None
     cu_latency_ms: int | None = None
     cm_latency_ms: int | None = None
+    cn_api_latency_ms: int | None = None
+    cn_api_source: str = ""
 
     @property
     def line(self):
@@ -107,6 +115,8 @@ class ProbeResult:
             parts.append(f"cu={self.cu_latency_ms}ms")
         if self.cm_latency_ms is not None:
             parts.append(f"cm={self.cm_latency_ms}ms")
+        if self.cn_api_latency_ms is not None:
+            parts.append(f"cn={self.cn_api_latency_ms}ms")
         parts.append(f"score={self.score}")
         return "#".join(parts)
 
@@ -192,14 +202,45 @@ def add_extra_source_rows(rows):
         print(f"extra source {source}: +{len(rows) - before} APAC rows", flush=True)
 
 
-def score_result(cf_latency, ct_latency=None, cu_latency=None, cm_latency=None):
-    # Lower is better. CF latency is the baseline because it is always available
-    # after ProxyIP validation. Three-network latencies can be added later.
-    score = cf_latency if cf_latency is not None else 999999
+def score_result(
+    cf_latency,
+    ct_latency=None,
+    cu_latency=None,
+    cm_latency=None,
+    cn_api_latency=None,
+):
+    # Lower is better. CF latency validates the ProxyIP path; CN API latency is
+    # an external mainland TCPing viewpoint and can be weighted independently.
+    score = 0.0
+    used_any = False
+    if cf_latency is not None:
+        score += cf_latency
+        used_any = True
     for latency in (ct_latency, cu_latency, cm_latency):
         if latency is not None:
             score += latency
+            used_any = True
+    if cn_api_latency is not None:
+        score += cn_api_latency * CN_API_SCORE_WEIGHT
+        used_any = True
+    elif ENABLE_CN_API_LATENCY:
+        score += CN_API_MISSING_PENALTY
+    if not used_any:
+        return 999999
     return int(score)
+
+
+def parse_latency_ms(value):
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    match = re.search(r"(\d+(?:\.\d+)?)\s*ms", text)
+    if match:
+        return int(float(match.group(1)))
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
 
 
 def first_exit(payload):
@@ -263,9 +304,38 @@ def test_proxyip_api_latency(row):
     )
 
 
+def test_cn_tcping_api(row):
+    query = urllib.parse.urlencode({"address": row.ip, "port": str(row.port)})
+    url = f"{CN_TCPING_API}?{query}"
+    req = urllib.request.Request(url, headers={"User-Agent": "cfip-apac-feed/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=CN_TCPING_TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return None
+
+    if int(payload.get("code", 0) or 0) != 200:
+        return None
+    latency = parse_latency_ms((payload.get("data") or {}).get("ping"))
+    if latency is None:
+        return None
+
+    return ProbeResult(
+        ip=row.ip,
+        port=row.port,
+        country=row.country,
+        cf_latency_ms=None,
+        score=score_result(None, cn_api_latency=latency),
+        cn_api_latency_ms=latency,
+        cn_api_source=CN_TCPING_API,
+    )
+
+
 def test_candidate(row):
     if SPEED_TEST_MODE == "tcp":
         return test_tcp_latency(row)
+    if SPEED_TEST_MODE == "cn_tcping_api":
+        return test_cn_tcping_api(row)
     return test_proxyip_api_latency(row)
 
 
@@ -294,6 +364,50 @@ def probe_candidates(rows):
             if completed % 100 == 0 or completed == len(future_map):
                 print(f"  tested {completed}/{len(future_map)}, available={len(results)}", flush=True)
     return results
+
+
+def enrich_cn_api_latencies(results):
+    if not ENABLE_CN_API_LATENCY or not results or SPEED_TEST_MODE == "cn_tcping_api":
+        return results
+
+    print(
+        f"CN API tcping latency testing {len(results)} available rows "
+        f"(workers={CN_TCPING_WORKERS}, timeout={CN_TCPING_TIMEOUT}s)",
+        flush=True,
+    )
+    by_key = {(result.ip, result.port, result.country): result for result in results}
+    rows = [
+        ProxyRow(ip=result.ip, port=result.port, country=result.country)
+        for result in results
+    ]
+
+    completed = 0
+    updated = 0
+    with ThreadPoolExecutor(max_workers=CN_TCPING_WORKERS) as executor:
+        future_map = {executor.submit(test_cn_tcping_api, row): row for row in rows}
+        for future in as_completed(future_map):
+            completed += 1
+            cn_result = future.result()
+            if cn_result is not None:
+                key = (cn_result.ip, cn_result.port, cn_result.country)
+                current = by_key[key]
+                by_key[key] = replace(
+                    current,
+                    cn_api_latency_ms=cn_result.cn_api_latency_ms,
+                    cn_api_source=cn_result.cn_api_source,
+                    score=score_result(
+                        current.cf_latency_ms,
+                        current.ct_latency_ms,
+                        current.cu_latency_ms,
+                        current.cm_latency_ms,
+                        cn_result.cn_api_latency_ms,
+                    ),
+                )
+                updated += 1
+            if completed % 100 == 0 or completed == len(future_map):
+                print(f"  CN API tested {completed}/{len(future_map)}, updated={updated}", flush=True)
+
+    return list(by_key.values())
 
 
 def select_top_results(results):
@@ -383,6 +497,7 @@ def main():
     print("stage 3/5: availability check")
     print("stage 4/5: latency test")
     results = probe_candidates(rows)
+    results = enrich_cn_api_latencies(results)
 
     print("stage 5/5: score and keep top entries per country/region")
     top_results = select_top_results(results)
