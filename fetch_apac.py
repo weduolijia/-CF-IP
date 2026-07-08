@@ -73,6 +73,27 @@ COMMON_CF_PORTS = {
 
 APAC_LINE_RE = re.compile(r"^\s*([0-9A-Fa-f:.]+):(\d{1,5})#([A-Za-z0-9/_-]+)")
 
+COUNTRY_NAME_TO_CODE = {
+    "AUSTRALIA": "AU",
+    "BANGLADESH": "BD",
+    "CHINA": "CN",
+    "GERMANY": "DE",
+    "HONG KONG": "HK",
+    "INDIA": "IN",
+    "INDONESIA": "ID",
+    "JAPAN": "JP",
+    "KAZAKHSTAN": "KZ",
+    "KYRGYZSTAN": "KG",
+    "MALAYSIA": "MY",
+    "PHILIPPINES": "PH",
+    "SINGAPORE": "SG",
+    "SOUTH KOREA": "KR",
+    "THAILAND": "TH",
+    "UNITED STATES": "US",
+    "UZBEKISTAN": "UZ",
+    "VIETNAM": "VN",
+}
+
 
 @dataclass(frozen=True)
 class ProxyRow:
@@ -104,11 +125,13 @@ class ProbeResult:
     cn_api_source: str = ""
 
     @property
+    def output_country(self):
+        return normalize_country_code(self.exit_country) or self.country
+
+    @property
     def line(self):
-        parts = [f"{self.ip}:{self.port}", self.country]
-        if self.cn_api_latency_ms is not None:
-            parts.append(f"cn={self.cn_api_latency_ms}ms")
-        return "#".join(parts)
+        latency = f"{self.cn_api_latency_ms}ms" if self.cn_api_latency_ms is not None else ""
+        return "#".join([f"{self.ip}:{self.port}", self.output_country, latency]).rstrip("#")
 
 
 def request_json(path, method="GET", body=None, retries=3):
@@ -175,12 +198,22 @@ def row_sort_key(row):
 
 def result_sort_key(result):
     return (
-        result.country,
+        result.output_country,
         result.cn_api_latency_ms if result.cn_api_latency_ms is not None else 999999,
         result.cf_latency_ms if result.cf_latency_ms is not None else 999999,
         ip_sort_parts(result.ip),
         result.port,
     )
+
+
+def normalize_country_code(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    upper = text.upper().replace("_", " ").replace("-", " ")
+    if len(upper) == 2 and upper.isalpha():
+        return upper
+    return COUNTRY_NAME_TO_CODE.get(upper, upper)
 
 
 def add_extra_source_rows(rows):
@@ -381,7 +414,7 @@ def enrich_cn_api_latencies(results):
 def select_top_results(results):
     by_country = {}
     for result in sorted(results, key=result_sort_key):
-        by_country.setdefault(result.country, []).append(result)
+        by_country.setdefault(result.output_country, []).append(result)
 
     top_results = [
         result

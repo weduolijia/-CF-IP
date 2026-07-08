@@ -17,15 +17,17 @@ ip:port#CC
 The script writes:
 
 - `all.txt`: merged APAC feed.
-- `raw.all`: final feed, up to 10 API-latency-ranked entries per country/region.
+- `raw.all`: final feed, up to 10 API-latency-ranked entries per exit country/region.
 - `top10.txt`: same text output as `raw.all`.
 - `top10.json`: structured metadata.
 
 `raw.all` output format:
 
 ```text
-ip:port#CC#cn=51ms
+ip:port#CC#51ms
 ```
+
+`CC` in `raw.all` is the ProxyIP exit country/region reported by the availability check, not the source/input country label.
 
 Run locally:
 
