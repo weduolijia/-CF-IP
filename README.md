@@ -29,6 +29,14 @@ ip:port#CC#51ms
 
 `CC` in `raw.all` is the ProxyIP exit country/region reported by the availability check, not the source/input country label.
 
+Public feed URLs:
+
+```text
+https://cdn.jsdelivr.net/gh/weduolijia/-CF-IP@main/raw.all
+https://fastly.jsdelivr.net/gh/weduolijia/-CF-IP@main/raw.all
+https://gcore.jsdelivr.net/gh/weduolijia/-CF-IP@main/raw.all
+```
+
 Run locally:
 
 ```bash

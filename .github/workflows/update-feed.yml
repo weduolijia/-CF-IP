@@ -25,7 +25,16 @@ jobs:
         run: python fetch_apac.py
 
       - name: Commit updated feed
+        id: commit
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Update APAC proxy feed"
           file_pattern: all.txt raw.all top10.txt top10.json
+
+      - name: Purge jsDelivr cache
+        if: steps.commit.outputs.changes_detected == 'true'
+        run: |
+          curl -fsS "https://purge.jsdelivr.net/gh/weduolijia/-CF-IP@main/raw.all"
+          curl -fsS "https://purge.jsdelivr.net/gh/weduolijia/-CF-IP@main/all.txt"
+          curl -fsS "https://purge.jsdelivr.net/gh/weduolijia/-CF-IP@main/top10.txt"
+          curl -fsS "https://purge.jsdelivr.net/gh/weduolijia/-CF-IP@main/top10.json"
