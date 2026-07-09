@@ -1,4 +1,5 @@
 import json
+import ipaddress
 import os
 import re
 import socket
@@ -28,9 +29,27 @@ ENABLE_CN_API_LATENCY = os.environ.get("ENABLE_CN_API_LATENCY", "1") != "0"
 CN_TCPING_API = os.environ.get("CN_TCPING_API", "https://v2.xxapi.cn/api/tcping")
 CN_TCPING_WORKERS = int(os.environ.get("CN_TCPING_WORKERS", "8"))
 CN_TCPING_TIMEOUT = float(os.environ.get("CN_TCPING_TIMEOUT", "15"))
+CF_IPS_V4_URL = os.environ.get("CF_IPS_V4_URL", "https://www.cloudflare.com/ips-v4")
+CF_IPS_V6_URL = os.environ.get("CF_IPS_V6_URL", "https://www.cloudflare.com/ips-v6")
+EXCLUDE_CLOUDFLARE_IPS = os.environ.get("EXCLUDE_CLOUDFLARE_IPS", "1") != "0"
+ALLOW_UNKNOWN_EXTRA_SOURCE_COUNTRY = os.environ.get("ALLOW_UNKNOWN_EXTRA_SOURCE_COUNTRY", "0") == "1"
+DEFAULT_EXTRA_SOURCES = [
+    "https://zip.cm.edu.kg/all.txt",
+    "https://bestcf.pages.dev/cmliu/all.txt",
+    "https://bestcf.pages.dev/luoli/all.txt",
+    "https://bestcf.pages.dev/s5gy/all.txt",
+    "https://bestcf.pages.dev/lzj/all.txt",
+    "https://bestcf.pages.dev/tiancheng/all.txt",
+    "https://bestcf.pages.dev/tiancheng/hk.txt",
+    "https://bestcf.pages.dev/tiancheng/sg.txt",
+    "https://bestcf.pages.dev/tiancheng/jp.txt",
+    "https://bestcf.pages.dev/tiancheng/kr.txt",
+    "https://bestcf.pages.dev/tiancheng/us.txt",
+    "https://bestcf.pages.dev/moistr/all.txt",
+]
 EXTRA_SOURCES = [
     source.strip()
-    for source in os.environ.get("EXTRA_SOURCES", "https://zip.cm.edu.kg/all.txt").split(",")
+    for source in os.environ.get("EXTRA_SOURCES", ",".join(DEFAULT_EXTRA_SOURCES)).split(",")
     if source.strip()
 ]
 
@@ -62,7 +81,10 @@ COMMON_CF_PORTS = {
     "8880",
 }
 
-APAC_LINE_RE = re.compile(r"^\s*([0-9A-Fa-f:.]+):(\d{1,5})#([A-Za-z0-9/_-]+)")
+IP_PORT_RE = re.compile(r"(?<![\d.])((?:\d{1,3}\.){3}\d{1,3})(?::(\d{1,5}))?(?![\d.])")
+COUNTRY_CODE_RE = re.compile(r"(?<![A-Z])(?:TW|HK|MO|SG|MY|KR|JP|US)(?![A-Z])")
+HASH_COUNTRY_CODE_RE = re.compile(r"#\s*([A-Za-z]{2})(?=\s*(?:$|\||,))")
+PIPE_COUNTRY_CODE_RE = re.compile(r"(?:^|\|)\s*([A-Z]{2})(?=\s*(?:\||$))")
 
 COUNTRY_NAME_TO_CODE = {
     "AUSTRALIA": "AU",
@@ -87,6 +109,26 @@ COUNTRY_NAME_TO_CODE = {
     "UZBEKISTAN": "UZ",
     "VIETNAM": "VN",
 }
+
+COUNTRY_HINTS = {
+    "香港": "HK",
+    "港岛": "HK",
+    "港島": "HK",
+    "澳门": "MO",
+    "澳門": "MO",
+    "台湾": "TW",
+    "台灣": "TW",
+    "新加坡": "SG",
+    "马来西亚": "MY",
+    "馬來西亞": "MY",
+    "韩国": "KR",
+    "韓國": "KR",
+    "日本": "JP",
+    "美国": "US",
+    "美國": "US",
+}
+
+CF_IP_NETWORKS = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +202,48 @@ def fetch_text(url, retries=3):
     raise RuntimeError(f"request failed for {url}: {last_error}")
 
 
+def fetch_cloudflare_networks():
+    networks = []
+    for url in (CF_IPS_V4_URL, CF_IPS_V6_URL):
+        try:
+            text = fetch_text(url)
+        except RuntimeError as exc:
+            print(f"warning: failed to fetch Cloudflare IP ranges from {url}: {exc}", flush=True)
+            continue
+        for line in text.splitlines():
+            value = line.strip()
+            if not value:
+                continue
+            try:
+                networks.append(ipaddress.ip_network(value, strict=False))
+            except ValueError:
+                print(f"warning: ignored invalid Cloudflare range: {value}", flush=True)
+    return networks
+
+
+def get_cloudflare_networks():
+    global CF_IP_NETWORKS
+    if not EXCLUDE_CLOUDFLARE_IPS:
+        return []
+    if CF_IP_NETWORKS is None:
+        CF_IP_NETWORKS = fetch_cloudflare_networks()
+        print(f"loaded {len(CF_IP_NETWORKS)} Cloudflare IP ranges", flush=True)
+    return CF_IP_NETWORKS
+
+
+def is_cloudflare_ip(ip):
+    if not EXCLUDE_CLOUDFLARE_IPS:
+        return False
+    networks = get_cloudflare_networks()
+    if not networks:
+        return False
+    try:
+        address = ipaddress.ip_address(str(ip).strip())
+    except ValueError:
+        return False
+    return any(address in network for network in networks)
+
+
 def add_row(rows, ip, port, country):
     try:
         port_number = int(str(port).strip())
@@ -170,7 +254,11 @@ def add_row(rows, ip, port, country):
 
     ip = str(ip).strip()
     country = str(country).strip().upper()
-    if ip and country:
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        return
+    if ip and country and not is_cloudflare_ip(ip):
         rows.add(ProxyRow(ip=ip, port=port_number, country=country))
 
 
@@ -210,19 +298,63 @@ def normalize_country_code(value):
     return COUNTRY_NAME_TO_CODE.get(upper, upper)
 
 
+def infer_country_from_text(text):
+    upper = str(text or "").upper().replace("_", " ").replace("-", " ")
+    match = HASH_COUNTRY_CODE_RE.search(upper)
+    if match:
+        return match.group(1)
+    match = COUNTRY_CODE_RE.search(upper)
+    if match:
+        return match.group(0)
+    for name, code in COUNTRY_NAME_TO_CODE.items():
+        if name in upper:
+            return code
+    for hint, code in COUNTRY_HINTS.items():
+        if hint in text:
+            return code
+    match = PIPE_COUNTRY_CODE_RE.search(upper)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def parse_extra_source_line(line):
+    match = IP_PORT_RE.search(line)
+    if not match:
+        return None
+    ip, port = match.groups()
+    if not port:
+        return None
+    country = infer_country_from_text(line) or "ZZ"
+    return ip, port, country
+
+
 def add_extra_source_rows(rows):
     for source in EXTRA_SOURCES:
         before = len(rows)
+        skipped_cf = 0
+        skipped_region = 0
         text = fetch_text(source)
         for line in text.splitlines():
-            match = APAC_LINE_RE.match(line)
-            if not match:
+            parsed = parse_extra_source_line(line)
+            if not parsed:
                 continue
-            ip, port, country = match.groups()
-            country = country.upper()
-            if country in APAC_CODES:
-                add_row(rows, ip, port, country)
-        print(f"extra source {source}: +{len(rows) - before} target rows", flush=True)
+            ip, port, country = parsed
+            if is_cloudflare_ip(ip):
+                skipped_cf += 1
+                continue
+            if country == "ZZ" and not ALLOW_UNKNOWN_EXTRA_SOURCE_COUNTRY:
+                skipped_region += 1
+                continue
+            if country != "ZZ" and country not in APAC_CODES:
+                skipped_region += 1
+                continue
+            add_row(rows, ip, port, country)
+        print(
+            f"extra source {source}: +{len(rows) - before} target rows "
+            f"(skipped_cf={skipped_cf}, skipped_region={skipped_region})",
+            flush=True,
+        )
 
 
 def score_result(cn_api_latency):
