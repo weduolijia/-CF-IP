@@ -341,6 +341,7 @@ def parse_extra_source_line(line, fallback_country=""):
 
 def parse_csv_source(text):
     """Parse xgonce/Cloudflare_IP's CSV while tolerating UTF-8 BOM and headers."""
+    text = text.lstrip("\ufeff")
     first_line = next((line for line in text.splitlines() if line.strip()), "")
     if "IP" not in first_line or "端口" not in first_line:
         return []
