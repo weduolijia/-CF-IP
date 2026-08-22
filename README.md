@@ -1,6 +1,6 @@
 # CFIP Target Region Feed
 
-Generate a filtered ProxyIP feed from `https://cfip.wxgqlfx.fun`.
+Generate a filtered Cloudflare ProxyIP feed for APAC target regions: pull public IP sources, filter by region, verify availability, rank by latency, and publish per-country Top10 lists.
 
 Pipeline:
 
@@ -52,7 +52,7 @@ RAW_OUTPUT_PATH=raw.all
 TOP_OUTPUT_PATH=top10.txt
 TOP_JSON_PATH=top10.json
 CFIP_LIMIT=10000
-EXTRA_SOURCES=https://zip.cm.edu.kg/all.txt,https://bestcf.pages.dev/cmliu/all.txt,https://bestcf.pages.dev/luoli/all.txt,https://bestcf.pages.dev/s5gy/all.txt,https://bestcf.pages.dev/lzj/all.txt,https://bestcf.pages.dev/tiancheng/all.txt,https://bestcf.pages.dev/tiancheng/hk.txt,https://bestcf.pages.dev/tiancheng/sg.txt,https://bestcf.pages.dev/tiancheng/jp.txt,https://bestcf.pages.dev/tiancheng/kr.txt,https://bestcf.pages.dev/tiancheng/us.txt,https://bestcf.pages.dev/moistr/all.txt
+# EXTRA_SOURCES=<comma-separated URLs of extra ip:port feeds>
 EXCLUDE_CLOUDFLARE_IPS=1
 ALLOW_UNKNOWN_EXTRA_SOURCE_COUNTRY=0
 CF_IPS_V4_URL=https://www.cloudflare.com/ips-v4
@@ -73,6 +73,6 @@ The default country/region scope is controlled by `APAC_CODES` in `fetch_apac.py
 Remote `EXTRA_SOURCES` can use `ip:port#CC`, BestCF-style text lines, or any line where the first usable candidate is `ip:port`.
 Cloudflare-owned IP ranges are excluded before candidates are written to `all.txt`.
 Extra-source rows without a detectable country/region are skipped by default.
-By default, availability is checked with the same style as `check.proxyip.cmliussss.net`: the script calls a Cloudflare-side ProxyIP check API.
+By default, availability is checked with a Cloudflare-side ProxyIP check API (`PROXYIP_CHECK_API`).
 After that, only rows that also return a latency from the configured TCPing API are kept.
 Final ranking uses `cn_api_latency_ms` only, and final output is filtered again by the checked exit country/region.
