@@ -30,10 +30,9 @@ ENABLE_CN_API_LATENCY = os.environ.get("ENABLE_CN_API_LATENCY", "1") != "0"
 CN_TCPING_API = os.environ.get("CN_TCPING_API", "https://v2.xxapi.cn/api/tcping")
 CN_TCPING_WORKERS = int(os.environ.get("CN_TCPING_WORKERS", "8"))
 CN_TCPING_TIMEOUT = float(os.environ.get("CN_TCPING_TIMEOUT", "15"))
-LATENCY_GROUP_MODE = os.environ.get("LATENCY_GROUP_MODE", "single")
-LATENCY_API_A = os.environ.get("LATENCY_API_A", "")
-LATENCY_API_B = os.environ.get("LATENCY_API_B", "")
-LATENCY_API_C = os.environ.get("LATENCY_API_C", "")
+LATENCY_GROUP_MODE = os.environ.get("LATENCY_GROUP_MODE", "two")
+LATENCY_API_A = os.environ.get("LATENCY_API_A", CN_TCPING_API)
+LATENCY_API_B = os.environ.get("LATENCY_API_B", "https://jkapi.com/api/zz_tcping")
 LATENCY_WORKERS_A = int(os.environ.get("LATENCY_WORKERS_A", "8"))
 LATENCY_WORKERS_B = int(os.environ.get("LATENCY_WORKERS_B", "8"))
 LATENCY_WORKERS_C = int(os.environ.get("LATENCY_WORKERS_C", "8"))
@@ -544,7 +543,7 @@ def test_proxyip_api_latency(row):
     )
 
 
-def parse_latency_payload(payload):
+def parse_latency_payload(payload, api_name="A"):
     if isinstance(payload, dict):
         data = payload.get("data") or {}
         if payload.get("code") not in (None, 200, "200", "ok", "OK"):
@@ -554,6 +553,10 @@ def parse_latency_payload(payload):
             latency = parse_latency_ms(value)
             if latency is not None:
                 return latency
+    if api_name == "B":
+        match = re.search(r"平均延迟\s*[:：]\s*([\d.]+)\s*ms", str(payload))
+        if match:
+            return int(float(match.group(1)))
     return parse_latency_ms(payload)
 
 
@@ -566,7 +569,10 @@ def test_latency_api(row, api_name, api_url, timeout):
     req = urllib.request.Request(url, headers={"User-Agent": "cfip-apac-feed/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
-            raw = response.read().decode("utf-8", "replace")
+            raw_bytes = response.read()
+            raw = raw_bytes.decode("utf-8", "replace")
+            if api_name == "B" and "平均延迟" not in raw:
+                raw = raw_bytes.decode("gb18030", "replace")
     except (urllib.error.URLError, TimeoutError, OSError):
         return None
 
@@ -574,7 +580,7 @@ def test_latency_api(row, api_name, api_url, timeout):
         payload = json.loads(raw)
     except json.JSONDecodeError:
         payload = raw
-    latency = parse_latency_payload(payload)
+    latency = parse_latency_payload(payload, api_name)
     if latency is None:
         return None
 
@@ -628,7 +634,7 @@ def enrich_cn_api_latencies(results):
     if not ENABLE_CN_API_LATENCY or not results:
         return results
 
-    if LATENCY_GROUP_MODE != "three":
+    if LATENCY_GROUP_MODE == "single":
         print(
             f"single latency API: {CN_TCPING_API} "
             f"(workers={CN_TCPING_WORKERS}, timeout={CN_TCPING_TIMEOUT}s)",
@@ -655,10 +661,8 @@ def enrich_cn_api_latencies(results):
         print(f"single API latency results: {len(enriched)} rows", flush=True)
         return enriched
 
-    if not all((LATENCY_API_A, LATENCY_API_B, LATENCY_API_C)):
-        raise RuntimeError(
-            "LATENCY_GROUP_MODE=three requires LATENCY_API_A, LATENCY_API_B, and LATENCY_API_C"
-        )
+    if LATENCY_GROUP_MODE != "two":
+        raise RuntimeError("LATENCY_GROUP_MODE must be single or two")
 
     print(
         f"three independent latency groups for {len(results)} available rows",
@@ -667,12 +671,11 @@ def enrich_cn_api_latencies(results):
     configs = [
         ("A", LATENCY_API_A, LATENCY_WORKERS_A, LATENCY_TIMEOUT_A),
         ("B", LATENCY_API_B, LATENCY_WORKERS_B, LATENCY_TIMEOUT_B),
-        ("C", LATENCY_API_C, LATENCY_WORKERS_C, LATENCY_TIMEOUT_C),
     ]
     # Sort before round-robin splitting so the same IP:port stays in the same
     # independent API group across runs.
     ordered_results = sorted(results, key=lambda item: (item.ip, item.port, item.country))
-    groups = [ordered_results[index::3] for index in range(3)]
+    groups = [ordered_results[index::2] for index in range(2)]
 
     def run_group(group, config):
         api_name, api_url, workers, timeout = config
@@ -720,7 +723,7 @@ def enrich_cn_api_latencies(results):
         futures = [executor.submit(run_group, group, config) for group, config in zip(groups, configs)]
         for future in as_completed(futures):
             merged.extend(future.result())
-    print(f"merged latency results: {len(merged)} rows from 3 independent groups", flush=True)
+    print(f"merged latency results: {len(merged)} rows from 2 independent groups", flush=True)
     return merged
 
 
