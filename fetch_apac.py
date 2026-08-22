@@ -1,3 +1,4 @@
+import csv
 import json
 import ipaddress
 import os
@@ -46,6 +47,16 @@ DEFAULT_EXTRA_SOURCES = [
     "https://bestcf.pages.dev/tiancheng/kr.txt",
     "https://bestcf.pages.dev/tiancheng/us.txt",
     "https://bestcf.pages.dev/moistr/all.txt",
+    # Additional public feeds: country-tagged ProxyIP lists, CSV results,
+    # and IPDB's country-aware proxy list.
+    "https://raw.githubusercontent.com/wanwushequ/ProxyIP/main/HK-TOP10.txt",
+    "https://raw.githubusercontent.com/wanwushequ/ProxyIP/main/JP-TOP10.txt",
+    "https://raw.githubusercontent.com/wanwushequ/ProxyIP/main/KR-TOP10.txt",
+    "https://raw.githubusercontent.com/wanwushequ/ProxyIP/main/SG-TOP10.txt",
+    "https://raw.githubusercontent.com/wanwushequ/ProxyIP/main/TW-TOP10.txt",
+    "https://raw.githubusercontent.com/wanwushequ/ProxyIP/main/US-TOP10.txt",
+    "https://raw.githubusercontent.com/xgonce/Cloudflare_IP/main/result.csv",
+    "https://raw.githubusercontent.com/ymyuuu/IPDB/main/BestProxy/bestproxy%26country.txt",
 ]
 EXTRA_SOURCES = [
     source.strip()
@@ -318,15 +329,35 @@ def infer_country_from_text(text):
     return ""
 
 
-def parse_extra_source_line(line):
+def parse_extra_source_line(line, fallback_country=""):
     match = IP_PORT_RE.search(line)
     if not match:
         return None
     ip, port = match.groups()
-    if not port:
-        return None
-    country = infer_country_from_text(line) or "ZZ"
+    port = port or "443"
+    country = infer_country_from_text(line) or normalize_country_code(fallback_country) or "ZZ"
     return ip, port, country
+
+
+def parse_csv_source(text):
+    """Parse xgonce/Cloudflare_IP's CSV while tolerating UTF-8 BOM and headers."""
+    first_line = next((line for line in text.splitlines() if line.strip()), "")
+    if "IP" not in first_line or "端口" not in first_line:
+        return []
+    rows = []
+    reader = csv.DictReader(text.splitlines())
+    for item in reader:
+        ip = str(item.get("IP", "")).strip()
+        port = str(item.get("端口", "")).strip() or "443"
+        country = normalize_country_code(item.get("CF归属国", "")) or "ZZ"
+        if ip:
+            rows.append((ip, port, country))
+    return rows
+
+
+def source_country_hint(source):
+    name = urllib.parse.unquote(urllib.parse.urlparse(source).path)
+    return infer_country_from_text(name)
 
 
 def add_extra_source_rows(rows):
@@ -334,9 +365,22 @@ def add_extra_source_rows(rows):
         before = len(rows)
         skipped_cf = 0
         skipped_region = 0
-        text = fetch_text(source)
-        for line in text.splitlines():
-            parsed = parse_extra_source_line(line)
+        try:
+            text = fetch_text(source)
+        except RuntimeError as exc:
+            print(f"warning: failed to fetch extra source {source}: {exc}", flush=True)
+            continue
+
+        parsed_rows = parse_csv_source(text)
+        if not parsed_rows:
+            fallback_country = source_country_hint(source)
+            parsed_rows = [
+                parsed
+                for line in text.splitlines()
+                if (parsed := parse_extra_source_line(line, fallback_country))
+            ]
+
+        for parsed in parsed_rows:
             if not parsed:
                 continue
             ip, port, country = parsed
