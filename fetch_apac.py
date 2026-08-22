@@ -30,6 +30,15 @@ ENABLE_CN_API_LATENCY = os.environ.get("ENABLE_CN_API_LATENCY", "1") != "0"
 CN_TCPING_API = os.environ.get("CN_TCPING_API", "https://v2.xxapi.cn/api/tcping")
 CN_TCPING_WORKERS = int(os.environ.get("CN_TCPING_WORKERS", "8"))
 CN_TCPING_TIMEOUT = float(os.environ.get("CN_TCPING_TIMEOUT", "15"))
+LATENCY_API_A = os.environ.get("LATENCY_API_A", "https://v2.xxapi.cn/api/tcping")
+LATENCY_API_B = os.environ.get("LATENCY_API_B", "https://api.jaxing.cc/v2/Tcping")
+LATENCY_API_C = os.environ.get("LATENCY_API_C", "https://jkapi.com/api/zz_tcping")
+LATENCY_WORKERS_A = int(os.environ.get("LATENCY_WORKERS_A", "8"))
+LATENCY_WORKERS_B = int(os.environ.get("LATENCY_WORKERS_B", "8"))
+LATENCY_WORKERS_C = int(os.environ.get("LATENCY_WORKERS_C", "8"))
+LATENCY_TIMEOUT_A = float(os.environ.get("LATENCY_TIMEOUT_A", str(CN_TCPING_TIMEOUT)))
+LATENCY_TIMEOUT_B = float(os.environ.get("LATENCY_TIMEOUT_B", str(CN_TCPING_TIMEOUT)))
+LATENCY_TIMEOUT_C = float(os.environ.get("LATENCY_TIMEOUT_C", str(CN_TCPING_TIMEOUT)))
 CF_IPS_V4_URL = os.environ.get("CF_IPS_V4_URL", "https://www.cloudflare.com/ips-v4")
 CF_IPS_V6_URL = os.environ.get("CF_IPS_V6_URL", "https://www.cloudflare.com/ips-v6")
 EXCLUDE_CLOUDFLARE_IPS = os.environ.get("EXCLUDE_CLOUDFLARE_IPS", "1") != "0"
@@ -534,19 +543,37 @@ def test_proxyip_api_latency(row):
     )
 
 
-def test_cn_tcping_api(row):
-    query = urllib.parse.urlencode({"address": row.ip, "port": str(row.port)})
-    url = f"{CN_TCPING_API}?{query}"
+def parse_latency_payload(payload):
+    if isinstance(payload, dict):
+        data = payload.get("data") or {}
+        if payload.get("code") not in (None, 200, "200", "ok", "OK"):
+            return None
+        values = [data.get("ping"), data.get("平均延迟"), payload.get("ping")]
+        for value in values:
+            latency = parse_latency_ms(value)
+            if latency is not None:
+                return latency
+    return parse_latency_ms(payload)
+
+
+def test_latency_api(row, api_name, api_url, timeout):
+    if api_name == "A":
+        params = {"address": row.ip, "port": str(row.port)}
+    else:
+        params = {"host": row.ip, "port": str(row.port)}
+    url = f"{api_url}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": "cfip-apac-feed/1.0"})
     try:
-        with urllib.request.urlopen(req, timeout=CN_TCPING_TIMEOUT) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode("utf-8", "replace")
+    except (urllib.error.URLError, TimeoutError, OSError):
         return None
 
-    if int(payload.get("code", 0) or 0) != 200:
-        return None
-    latency = parse_latency_ms((payload.get("data") or {}).get("ping"))
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = raw
+    latency = parse_latency_payload(payload)
     if latency is None:
         return None
 
@@ -557,7 +584,7 @@ def test_cn_tcping_api(row):
         cf_latency_ms=None,
         score=score_result(latency),
         cn_api_latency_ms=latency,
-        cn_api_source=CN_TCPING_API,
+        cn_api_source=api_url,
     )
 
 
@@ -598,42 +625,70 @@ def probe_candidates(rows):
 
 def enrich_cn_api_latencies(results):
     if not ENABLE_CN_API_LATENCY or not results:
-        return []
+        return results
 
     print(
-        f"CN API tcping latency testing {len(results)} available rows "
-        f"(workers={CN_TCPING_WORKERS}, timeout={CN_TCPING_TIMEOUT}s)",
+        f"three independent latency groups for {len(results)} available rows",
         flush=True,
     )
-    by_key = {(result.ip, result.port, result.country): result for result in results}
-    enriched = []
-    rows = [
-        ProxyRow(ip=result.ip, port=result.port, country=result.country)
-        for result in results
+    configs = [
+        ("A", LATENCY_API_A, LATENCY_WORKERS_A, LATENCY_TIMEOUT_A),
+        ("B", LATENCY_API_B, LATENCY_WORKERS_B, LATENCY_TIMEOUT_B),
+        ("C", LATENCY_API_C, LATENCY_WORKERS_C, LATENCY_TIMEOUT_C),
     ]
+    # Sort before round-robin splitting so the same IP:port stays in the same
+    # independent API group across runs.
+    ordered_results = sorted(results, key=lambda item: (item.ip, item.port, item.country))
+    groups = [ordered_results[index::3] for index in range(3)]
 
-    completed = 0
-    updated = 0
-    with ThreadPoolExecutor(max_workers=CN_TCPING_WORKERS) as executor:
-        future_map = {executor.submit(test_cn_tcping_api, row): row for row in rows}
-        for future in as_completed(future_map):
-            completed += 1
-            cn_result = future.result()
-            if cn_result is not None:
-                key = (cn_result.ip, cn_result.port, cn_result.country)
-                current = by_key[key]
-                by_key[key] = replace(
-                    current,
-                    cn_api_latency_ms=cn_result.cn_api_latency_ms,
-                    cn_api_source=cn_result.cn_api_source,
-                    score=score_result(cn_result.cn_api_latency_ms),
-                )
-                enriched.append(by_key[key])
-                updated += 1
-            if completed % 100 == 0 or completed == len(future_map):
-                print(f"  CN API tested {completed}/{len(future_map)}, updated={updated}", flush=True)
+    def run_group(group, config):
+        api_name, api_url, workers, timeout = config
+        print(
+            f"  group {api_name}: {len(group)} rows -> {api_url} "
+            f"(workers={workers}, timeout={timeout}s)",
+            flush=True,
+        )
+        output = []
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_map = {
+                executor.submit(
+                    test_latency_api,
+                    ProxyRow(result.ip, result.port, result.country),
+                    api_name,
+                    api_url,
+                    timeout,
+                ): result
+                for result in group
+            }
+            completed = 0
+            for future in as_completed(future_map):
+                completed += 1
+                measured = future.result()
+                if measured is not None:
+                    original = future_map[future]
+                    output.append(
+                        replace(
+                            original,
+                            cn_api_latency_ms=measured.cn_api_latency_ms,
+                            cn_api_source=f"group-{api_name}:{api_url}",
+                            score=score_result(measured.cn_api_latency_ms),
+                        )
+                    )
+                if completed % 100 == 0 or completed == len(future_map):
+                    print(
+                        f"    group {api_name}: tested {completed}/{len(future_map)}, "
+                        f"updated={len(output)}",
+                        flush=True,
+                    )
+        return output
 
-    return enriched
+    merged = []
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(run_group, group, config) for group, config in zip(groups, configs)]
+        for future in as_completed(futures):
+            merged.extend(future.result())
+    print(f"merged latency results: {len(merged)} rows from 3 independent groups", flush=True)
+    return merged
 
 
 def select_top_results(results):
