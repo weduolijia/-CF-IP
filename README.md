@@ -1,5 +1,13 @@
 # CFIP Target Region Feed
 
+Additional public sources are merged automatically:
+
+- `wanwushequ/ProxyIP` country Top10 lists (bare IPv4, default port `443`).
+- `xgonce/Cloudflare_IP/result.csv` (CSV with IP, port, and Cloudflare country).
+- `ymyuuu/IPDB/BestProxy/bestproxy&country.txt` (`IP#CC` format).
+
+The extra-source parser accepts `IP:port`, bare `IP`, `IP#CC`, and the CSV format above. Sources that cannot be fetched are logged and skipped so one upstream outage does not stop the feed.
+
 Generate a filtered Cloudflare ProxyIP feed for APAC target regions: pull public IP sources, filter by region, verify availability, rank by latency, and publish per-country Top10 lists.
 
 Pipeline:
