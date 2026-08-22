@@ -30,9 +30,10 @@ ENABLE_CN_API_LATENCY = os.environ.get("ENABLE_CN_API_LATENCY", "1") != "0"
 CN_TCPING_API = os.environ.get("CN_TCPING_API", "https://v2.xxapi.cn/api/tcping")
 CN_TCPING_WORKERS = int(os.environ.get("CN_TCPING_WORKERS", "8"))
 CN_TCPING_TIMEOUT = float(os.environ.get("CN_TCPING_TIMEOUT", "15"))
-LATENCY_API_A = os.environ.get("LATENCY_API_A", "https://v2.xxapi.cn/api/tcping")
-LATENCY_API_B = os.environ.get("LATENCY_API_B", "https://api.jaxing.cc/v2/Tcping")
-LATENCY_API_C = os.environ.get("LATENCY_API_C", "https://jkapi.com/api/zz_tcping")
+LATENCY_GROUP_MODE = os.environ.get("LATENCY_GROUP_MODE", "single")
+LATENCY_API_A = os.environ.get("LATENCY_API_A", "")
+LATENCY_API_B = os.environ.get("LATENCY_API_B", "")
+LATENCY_API_C = os.environ.get("LATENCY_API_C", "")
 LATENCY_WORKERS_A = int(os.environ.get("LATENCY_WORKERS_A", "8"))
 LATENCY_WORKERS_B = int(os.environ.get("LATENCY_WORKERS_B", "8"))
 LATENCY_WORKERS_C = int(os.environ.get("LATENCY_WORKERS_C", "8"))
@@ -626,6 +627,38 @@ def probe_candidates(rows):
 def enrich_cn_api_latencies(results):
     if not ENABLE_CN_API_LATENCY or not results:
         return results
+
+    if LATENCY_GROUP_MODE != "three":
+        print(
+            f"single latency API: {CN_TCPING_API} "
+            f"(workers={CN_TCPING_WORKERS}, timeout={CN_TCPING_TIMEOUT}s)",
+            flush=True,
+        )
+        enriched = []
+        with ThreadPoolExecutor(max_workers=CN_TCPING_WORKERS) as executor:
+            future_map = {
+                executor.submit(test_latency_api, ProxyRow(item.ip, item.port, item.country), "A", CN_TCPING_API, CN_TCPING_TIMEOUT): item
+                for item in results
+            }
+            for future in as_completed(future_map):
+                measured = future.result()
+                if measured is not None:
+                    original = future_map[future]
+                    enriched.append(
+                        replace(
+                            original,
+                            cn_api_latency_ms=measured.cn_api_latency_ms,
+                            cn_api_source=CN_TCPING_API,
+                            score=score_result(measured.cn_api_latency_ms),
+                        )
+                    )
+        print(f"single API latency results: {len(enriched)} rows", flush=True)
+        return enriched
+
+    if not all((LATENCY_API_A, LATENCY_API_B, LATENCY_API_C)):
+        raise RuntimeError(
+            "LATENCY_GROUP_MODE=three requires LATENCY_API_A, LATENCY_API_B, and LATENCY_API_C"
+        )
 
     print(
         f"three independent latency groups for {len(results)} available rows",
