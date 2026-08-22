@@ -57,6 +57,7 @@ DEFAULT_EXTRA_SOURCES = [
     "https://raw.githubusercontent.com/wanwushequ/ProxyIP/main/US-TOP10.txt",
     "https://raw.githubusercontent.com/xgonce/Cloudflare_IP/main/result.csv",
     "https://raw.githubusercontent.com/ymyuuu/IPDB/main/BestProxy/bestproxy%26country.txt",
+    "https://raw.githubusercontent.com/weduolijia/cf-subscription-parser/main/proxyip.txt",
 ]
 EXTRA_SOURCES = [
     source.strip()
