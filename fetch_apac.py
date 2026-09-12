@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 
-BASE_URL = os.environ.get("CFIP_BASE_URL", "https://cfip.wxgqlfx.fun")
+BASE_URL = os.environ.get("CFIP_BASE_URL", "https://cfip.wxgqlfx.fun").strip().rstrip("/")
 OUTPUT_PATH = Path(os.environ.get("OUTPUT_PATH", "all.txt"))
 RAW_OUTPUT_PATH = Path(os.environ.get("RAW_OUTPUT_PATH", "raw.all"))
 TOP_OUTPUT_PATH = Path(os.environ.get("TOP_OUTPUT_PATH", "top10.txt"))
@@ -242,6 +242,9 @@ class ProbeResult:
 
 
 def request_json(path, method="GET", body=None, retries=3):
+    if not BASE_URL:
+        raise RuntimeError("CFIP_BASE_URL is empty")
+
     data = None
     headers = {"User-Agent": "cfip-apac-feed/1.0"}
     if body is not None:
@@ -743,13 +746,28 @@ def select_top_results(results):
     return top_results
 
 
-def collect_rows():
-    countries = request_json("/api/countries")
-    available = {country["code"] for country in countries}
+def add_primary_api_rows(rows):
+    if not BASE_URL:
+        print("primary API disabled; using public sources only", flush=True)
+        return None
+
+    try:
+        countries = request_json("/api/countries")
+        available = {
+            normalize_country_code(country.get("code", ""))
+            for country in countries
+            if isinstance(country, dict)
+        }
+    except (RuntimeError, TypeError, AttributeError) as exc:
+        print(
+            f"warning: primary API unavailable ({BASE_URL}): {exc}; "
+            "continuing with public sources",
+            flush=True,
+        )
+        return None
+
     selected = sorted(APAC_CODES & available)
     missing = sorted(APAC_CODES - available)
-
-    rows = set()
     ports_by_country = {}
     capped_countries = []
     total_hint = None
@@ -760,7 +778,15 @@ def collect_rows():
 
     for index, code in enumerate(selected, 1):
         payload = {"country": code, "port": "", "limit": LIMIT}
-        data = request_json("/api/query", method="POST", body=payload)
+        try:
+            data = request_json("/api/query", method="POST", body=payload)
+        except RuntimeError as exc:
+            print(f"warning: primary API query failed for {code}: {exc}", flush=True)
+            continue
+        if not isinstance(data, dict):
+            print(f"warning: primary API returned an invalid payload for {code}", flush=True)
+            continue
+
         proxies = data.get("proxies", [])
         total_hint = data.get("totalProxies", total_hint)
 
@@ -768,6 +794,8 @@ def collect_rows():
             capped_countries.append(code)
 
         for proxy in proxies:
+            if not isinstance(proxy, dict):
+                continue
             add_proxy(rows, proxy, code)
             port = str(proxy.get("port", "")).strip()
             if port:
@@ -785,14 +813,93 @@ def collect_rows():
         print(f"{code}: port backfill candidates: {len(ports)}", flush=True)
         for port in ports:
             payload = {"country": code, "port": port, "limit": LIMIT}
-            data = request_json("/api/query", method="POST", body=payload)
+            try:
+                data = request_json("/api/query", method="POST", body=payload)
+            except RuntimeError as exc:
+                print(
+                    f"warning: primary API port backfill failed for {code}:{port}: {exc}",
+                    flush=True,
+                )
+                continue
+            if not isinstance(data, dict):
+                continue
             for proxy in data.get("proxies", []):
-                add_proxy(rows, proxy, code)
+                if isinstance(proxy, dict):
+                    add_proxy(rows, proxy, code)
             time.sleep(0.03)
         print(f"{code}: +{len(rows) - before} rows after backfill", flush=True)
 
+    return total_hint
+
+
+def add_cached_rows(rows):
+    if not OUTPUT_PATH.exists():
+        return
+
+    before = len(rows)
+    try:
+        text = OUTPUT_PATH.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(f"warning: failed to read cached candidates from {OUTPUT_PATH}: {exc}", flush=True)
+        return
+
+    for line in text.splitlines():
+        parsed = parse_extra_source_line(line)
+        if not parsed:
+            continue
+        ip, port, country = parsed
+        if country in APAC_CODES:
+            add_row(rows, ip, port, country)
+
+    print(f"cached candidates from {OUTPUT_PATH}: +{len(rows) - before} target rows", flush=True)
+
+
+def collect_rows():
+    rows = set()
+    total_hint = add_primary_api_rows(rows)
     add_extra_source_rows(rows)
+    if not rows:
+        add_cached_rows(rows)
     return rows, total_hint
+
+
+def output_countries(path):
+    if not path.exists():
+        return set()
+
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        print(f"warning: failed to inspect existing output {path}: {exc}", flush=True)
+        return set()
+
+    countries = set()
+    for line in lines:
+        parts = line.strip().split("#", 2)
+        if len(parts) < 2:
+            continue
+        country = normalize_country_code(parts[1])
+        if country in APAC_CODES:
+            countries.add(country)
+    return countries
+
+
+def should_publish(top_results):
+    if not top_results:
+        print("warning: no final rows passed validation; leaving existing feed files untouched", flush=True)
+        return False
+
+    existing_countries = output_countries(RAW_OUTPUT_PATH)
+    refreshed_countries = {result.output_country for result in top_results}
+    missing_countries = sorted(existing_countries - refreshed_countries)
+    if missing_countries:
+        print(
+            "warning: refreshed output would drop published countries "
+            f"({', '.join(missing_countries)}); leaving existing feed files untouched",
+            flush=True,
+        )
+        return False
+    return True
 
 
 def write_lines(path, lines):
@@ -810,8 +917,9 @@ def main():
     print("stage 2/5: merge and filter target rows")
     rows, total_hint = collect_rows()
 
-    write_lines(OUTPUT_PATH, [row.line for row in sorted(rows, key=row_sort_key)])
-    print(f"wrote {len(rows)} unique rows to {OUTPUT_PATH}")
+    if not rows:
+        print("warning: no candidate rows collected; leaving existing feed files untouched", flush=True)
+        return
 
     print("stage 3/5: availability check")
     print("stage 4/5: latency test")
@@ -820,6 +928,11 @@ def main():
 
     print("stage 5/5: score and keep top entries per country/region")
     top_results = select_top_results(results)
+    if not should_publish(top_results):
+        return
+
+    write_lines(OUTPUT_PATH, [row.line for row in sorted(rows, key=row_sort_key)])
+    print(f"wrote {len(rows)} unique rows to {OUTPUT_PATH}")
     write_lines(RAW_OUTPUT_PATH, [result.line for result in sorted(top_results, key=result_sort_key)])
     write_lines(TOP_OUTPUT_PATH, [result.line for result in sorted(top_results, key=result_sort_key)])
     write_json(TOP_JSON_PATH, [asdict(result) for result in sorted(top_results, key=result_sort_key)])

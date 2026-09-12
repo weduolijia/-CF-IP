@@ -21,6 +21,9 @@ jobs:
         with:
           python-version: "3.x"
 
+      - name: Test updater safeguards
+        run: python -m unittest discover -s tests -v
+
       - name: Generate feed
         run: python fetch_apac.py
 

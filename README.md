@@ -6,7 +6,7 @@ Additional public sources are merged automatically:
 - `xgonce/Cloudflare_IP/result.csv` (CSV with IP, port, and Cloudflare country).
 - `ymyuuu/IPDB/BestProxy/bestproxy&country.txt` (`IP#CC` format).
 
-The extra-source parser accepts `IP:port`, bare `IP`, `IP#CC`, and the CSV format above. Sources that cannot be fetched are logged and skipped so one upstream outage does not stop the feed.
+The extra-source parser accepts `IP:port`, bare `IP`, `IP#CC`, and the CSV format above. Sources that cannot be fetched are logged and skipped so one upstream outage does not stop the feed. The primary CFIP API is optional: when it is unavailable, the updater continues with the public sources and then the checked-in `all.txt` cache if needed. Generated files are left unchanged when no final rows pass validation or a refresh would remove a country already present in `raw.all`.
 
 Generate a filtered Cloudflare ProxyIP feed for APAC target regions: pull public IP sources, filter by region, verify availability, rank by latency, and publish per-country Top10 lists.
 
