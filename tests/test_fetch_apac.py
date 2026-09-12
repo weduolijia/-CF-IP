@@ -81,10 +81,10 @@ class FeedFallbackTests(unittest.TestCase):
 
 
 class LatencyModeTests(unittest.TestCase):
-    def test_external_latency_enrichment_is_disabled_by_default(self):
-        self.assertFalse(feed.ENABLE_CN_API_LATENCY)
+    def test_external_latency_enrichment_is_enabled_by_default(self):
+        self.assertTrue(feed.ENABLE_CN_API_LATENCY)
 
-    def test_disabled_external_latency_keeps_cloudflare_measurements(self):
+    def test_explicitly_disabled_external_latency_keeps_cloudflare_measurements(self):
         rows = [feed.ProbeResult("198.51.100.39", 443, "HK", 12, 999999)]
         with (
             patch.object(feed, "ENABLE_CN_API_LATENCY", False),
@@ -94,6 +94,17 @@ class LatencyModeTests(unittest.TestCase):
 
         self.assertIs(enriched, rows)
         test_latency_api.assert_not_called()
+
+    def test_request_start_limiter_spaces_requests(self):
+        limiter = feed.RequestStartLimiter(4)
+        with (
+            patch.object(feed.time, "monotonic", side_effect=[10.0, 10.0]),
+            patch.object(feed.time, "sleep") as sleep,
+        ):
+            limiter.wait()
+            limiter.wait()
+
+        sleep.assert_called_once_with(0.25)
 
     def test_single_mode_uses_only_the_primary_latency_api(self):
         rows = [
@@ -124,6 +135,67 @@ class LatencyModeTests(unittest.TestCase):
 
         self.assertEqual(len(enriched), len(rows))
         self.assertEqual(calls, [("A", "https://latency.example/api")] * len(rows))
+
+    def test_single_mode_sends_every_available_row_to_domestic_tcping(self):
+        rows = [
+            feed.ProbeResult(f"198.51.100.{index}", 443, "HK", index, 999999)
+            for index in range(1, 13)
+        ]
+        calls = []
+
+        def fake_latency(row, api_name, api_url, timeout):
+            calls.append((row.ip, row.port, api_name, api_url))
+            return feed.ProbeResult(
+                row.ip,
+                row.port,
+                row.country,
+                None,
+                1,
+                cn_api_latency_ms=1,
+                cn_api_source=api_url,
+            )
+
+        with (
+            patch.object(feed, "ENABLE_CN_API_LATENCY", True),
+            patch.object(feed, "LATENCY_GROUP_MODE", "single"),
+            patch.object(feed, "CN_TCPING_API", "https://latency.example/api"),
+            patch.object(feed, "CN_TCPING_MAX_QPS", 0),
+            patch.object(feed, "test_latency_api", side_effect=fake_latency),
+        ):
+            enriched = feed.enrich_cn_api_latencies(rows)
+
+        self.assertEqual(len(enriched), len(rows))
+        self.assertEqual(
+            {(ip, port) for ip, port, _, _ in calls},
+            {(row.ip, row.port) for row in rows},
+        )
+
+    def test_select_top_results_keeps_ten_lowest_domestic_latencies_per_region(self):
+        results = []
+        for country, third_octet in (("HK", 100), ("JP", 101)):
+            for latency in range(12):
+                results.append(
+                    feed.ProbeResult(
+                        ip=f"198.51.{third_octet}.{latency + 1}",
+                        port=443,
+                        country=country,
+                        cf_latency_ms=999,
+                        score=latency,
+                        exit_country=country,
+                        cn_api_latency_ms=latency,
+                    )
+                )
+
+        selected = feed.select_top_results(results)
+
+        self.assertEqual(len(selected), 20)
+        for country in ("HK", "JP"):
+            latencies = [
+                item.cn_api_latency_ms
+                for item in selected
+                if item.output_country == country
+            ]
+            self.assertEqual(latencies, list(range(10)))
 
     def test_two_mode_requires_an_explicit_second_latency_api(self):
         row = feed.ProbeResult("198.51.100.42", 443, "HK", 10, 999999)

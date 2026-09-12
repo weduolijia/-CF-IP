@@ -12,7 +12,10 @@ jobs:
   update:
     runs-on: ubuntu-latest
     env:
-      ENABLE_CN_API_LATENCY: "0"
+      ENABLE_CN_API_LATENCY: "1"
+      CN_TCPING_WORKERS: "50"
+      CN_TCPING_TIMEOUT: "8"
+      CN_TCPING_MAX_QPS: "40"
 
     steps:
       - name: Checkout

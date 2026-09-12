@@ -12,6 +12,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from threading import Lock
 
 
 BASE_URL = os.environ.get("CFIP_BASE_URL", "https://cfip.wxgqlfx.fun").strip().rstrip("/")
@@ -26,10 +27,11 @@ SPEED_TEST_MODE = os.environ.get("SPEED_TEST_MODE", "proxyip_api")
 SPEED_TEST_TIMEOUT = float(os.environ.get("SPEED_TEST_TIMEOUT", "30"))
 SPEED_TEST_WORKERS = int(os.environ.get("SPEED_TEST_WORKERS", "20"))
 PROXYIP_CHECK_API = os.environ.get("PROXYIP_CHECK_API", "https://api.090227.xyz/check")
-ENABLE_CN_API_LATENCY = os.environ.get("ENABLE_CN_API_LATENCY", "0") != "0"
+ENABLE_CN_API_LATENCY = os.environ.get("ENABLE_CN_API_LATENCY", "1") != "0"
 CN_TCPING_API = os.environ.get("CN_TCPING_API", "https://v2.xxapi.cn/api/tcping")
-CN_TCPING_WORKERS = int(os.environ.get("CN_TCPING_WORKERS", "8"))
-CN_TCPING_TIMEOUT = float(os.environ.get("CN_TCPING_TIMEOUT", "15"))
+CN_TCPING_WORKERS = int(os.environ.get("CN_TCPING_WORKERS", "50"))
+CN_TCPING_TIMEOUT = float(os.environ.get("CN_TCPING_TIMEOUT", "8"))
+CN_TCPING_MAX_QPS = float(os.environ.get("CN_TCPING_MAX_QPS", "40"))
 LATENCY_GROUP_MODE = os.environ.get("LATENCY_GROUP_MODE", "single")
 LATENCY_API_A = os.environ.get("LATENCY_API_A", CN_TCPING_API)
 LATENCY_API_B = os.environ.get("LATENCY_API_B", "").strip()
@@ -472,6 +474,23 @@ def score_result(cn_api_latency):
     return cn_api_latency if cn_api_latency is not None else 999999
 
 
+class RequestStartLimiter:
+    def __init__(self, max_qps):
+        self.interval = 1.0 / max_qps if max_qps > 0 else 0.0
+        self.next_start = 0.0
+        self.lock = Lock()
+
+    def wait(self):
+        if not self.interval:
+            return
+        with self.lock:
+            now = time.monotonic()
+            delay = max(0.0, self.next_start - now)
+            self.next_start = max(self.next_start, now) + self.interval
+        if delay:
+            time.sleep(delay)
+
+
 def parse_latency_ms(value):
     if value is None:
         return None
@@ -646,16 +665,30 @@ def enrich_cn_api_latencies(results):
     if LATENCY_GROUP_MODE == "single":
         print(
             f"single latency API: {CN_TCPING_API} "
-            f"(workers={CN_TCPING_WORKERS}, timeout={CN_TCPING_TIMEOUT}s)",
+            f"(rows={len(results)}, workers={CN_TCPING_WORKERS}, "
+            f"timeout={CN_TCPING_TIMEOUT}s, max_qps={CN_TCPING_MAX_QPS})",
             flush=True,
         )
         enriched = []
+        limiter = RequestStartLimiter(CN_TCPING_MAX_QPS)
+
+        def measure(item):
+            limiter.wait()
+            return test_latency_api(
+                ProxyRow(item.ip, item.port, item.country),
+                "A",
+                CN_TCPING_API,
+                CN_TCPING_TIMEOUT,
+            )
+
         with ThreadPoolExecutor(max_workers=CN_TCPING_WORKERS) as executor:
             future_map = {
-                executor.submit(test_latency_api, ProxyRow(item.ip, item.port, item.country), "A", CN_TCPING_API, CN_TCPING_TIMEOUT): item
+                executor.submit(measure, item): item
                 for item in results
             }
+            completed = 0
             for future in as_completed(future_map):
+                completed += 1
                 measured = future.result()
                 if measured is not None:
                     original = future_map[future]
@@ -666,6 +699,12 @@ def enrich_cn_api_latencies(results):
                             cn_api_source=CN_TCPING_API,
                             score=score_result(measured.cn_api_latency_ms),
                         )
+                    )
+                if completed % 100 == 0 or completed == len(future_map):
+                    print(
+                        f"  single API: tested {completed}/{len(future_map)}, "
+                        f"updated={len(enriched)}",
+                        flush=True,
                     )
         print(f"single API latency results: {len(enriched)} rows", flush=True)
         return enriched
