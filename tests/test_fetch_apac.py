@@ -78,3 +78,43 @@ class FeedFallbackTests(unittest.TestCase):
 
         write_lines.assert_not_called()
         write_json.assert_not_called()
+
+
+class LatencyModeTests(unittest.TestCase):
+    def test_single_mode_uses_only_the_primary_latency_api(self):
+        rows = [
+            feed.ProbeResult("198.51.100.40", 443, "HK", 10, 999999),
+            feed.ProbeResult("198.51.100.41", 443, "JP", 20, 999999),
+        ]
+        calls = []
+
+        def fake_latency(row, api_name, api_url, timeout):
+            calls.append((api_name, api_url))
+            return feed.ProbeResult(
+                row.ip,
+                row.port,
+                row.country,
+                None,
+                5,
+                cn_api_latency_ms=5,
+                cn_api_source=api_url,
+            )
+
+        with (
+            patch.object(feed, "LATENCY_GROUP_MODE", "single"),
+            patch.object(feed, "CN_TCPING_API", "https://latency.example/api"),
+            patch.object(feed, "test_latency_api", side_effect=fake_latency),
+        ):
+            enriched = feed.enrich_cn_api_latencies(rows)
+
+        self.assertEqual(len(enriched), len(rows))
+        self.assertEqual(calls, [("A", "https://latency.example/api")] * len(rows))
+
+    def test_two_mode_requires_an_explicit_second_latency_api(self):
+        row = feed.ProbeResult("198.51.100.42", 443, "HK", 10, 999999)
+        with (
+            patch.object(feed, "LATENCY_GROUP_MODE", "two"),
+            patch.object(feed, "LATENCY_API_B", ""),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "LATENCY_API_B"):
+                feed.enrich_cn_api_latencies([row])

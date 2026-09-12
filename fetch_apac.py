@@ -30,9 +30,9 @@ ENABLE_CN_API_LATENCY = os.environ.get("ENABLE_CN_API_LATENCY", "1") != "0"
 CN_TCPING_API = os.environ.get("CN_TCPING_API", "https://v2.xxapi.cn/api/tcping")
 CN_TCPING_WORKERS = int(os.environ.get("CN_TCPING_WORKERS", "8"))
 CN_TCPING_TIMEOUT = float(os.environ.get("CN_TCPING_TIMEOUT", "15"))
-LATENCY_GROUP_MODE = os.environ.get("LATENCY_GROUP_MODE", "two")
+LATENCY_GROUP_MODE = os.environ.get("LATENCY_GROUP_MODE", "single")
 LATENCY_API_A = os.environ.get("LATENCY_API_A", CN_TCPING_API)
-LATENCY_API_B = os.environ.get("LATENCY_API_B", "https://jkapi.com/api/zz_tcping")
+LATENCY_API_B = os.environ.get("LATENCY_API_B", "").strip()
 LATENCY_WORKERS_A = int(os.environ.get("LATENCY_WORKERS_A", "8"))
 LATENCY_WORKERS_B = int(os.environ.get("LATENCY_WORKERS_B", "8"))
 LATENCY_WORKERS_C = int(os.environ.get("LATENCY_WORKERS_C", "8"))
@@ -667,8 +667,11 @@ def enrich_cn_api_latencies(results):
     if LATENCY_GROUP_MODE != "two":
         raise RuntimeError("LATENCY_GROUP_MODE must be single or two")
 
+    if not LATENCY_API_B:
+        raise RuntimeError("LATENCY_API_B must be set when LATENCY_GROUP_MODE=two")
+
     print(
-        f"three independent latency groups for {len(results)} available rows",
+        f"two independent latency groups for {len(results)} available rows",
         flush=True,
     )
     configs = [
