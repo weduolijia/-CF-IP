@@ -80,6 +80,53 @@ class FeedFallbackTests(unittest.TestCase):
         write_json.assert_not_called()
 
 
+class ExtraSourceTests(unittest.TestCase):
+    def test_bestcf_page_sources_are_present_without_duplicate_urls(self):
+        expected = {
+            "https://bestcf.pages.dev/cmliu2/all.txt",
+            "https://cf.junzhen.qzz.io/best_ips_bj.txt",
+            "https://raw.githubusercontent.com/svip-s/cloudflare_ip/refs/heads/main/best_ips.txt",
+            "https://raw.githubusercontent.com/love-ztm/cfip/refs/heads/main/best_ips.txt",
+            "https://raw.githubusercontent.com/love-ztm/cfip/refs/heads/main/ubest_ips.txt",
+            "https://raw.githubusercontent.com/cmliu/WorkerVless2sub/refs/heads/main/addressesapi.txt",
+            "https://bestcf.pages.dev/tiancheng2/all.txt",
+            "https://bestcf.pages.dev/tiancheng3/all.txt",
+            "https://raw.githubusercontent.com/Fiatnorm/OptiDomain-Pages/refs/heads/main/optimized_cf_ips.txt",
+        }
+
+        self.assertTrue(expected.issubset(set(feed.DEFAULT_EXTRA_SOURCES)))
+        self.assertEqual(len(feed.DEFAULT_EXTRA_SOURCES), len(set(feed.DEFAULT_EXTRA_SOURCES)))
+
+    def test_bestcf_country_tagged_line_keeps_region_code(self):
+        parsed = feed.parse_extra_source_line(
+            "198.51.100.10:443#CM preferred | Hong Kong HK"
+        )
+
+        self.assertEqual(parsed, ("198.51.100.10", "443", "HK"))
+
+    def test_extra_sources_skip_non_public_and_duplicate_rows(self):
+        source = "https://example.invalid/cmliu2/all.txt"
+        text = "\n".join(
+            (
+                "127.0.0.1:1234#HK",
+                "10.0.0.1:443#HK",
+                "8.8.8.8:443#HK",
+                "8.8.8.8:443#HK",
+                "not-an-ip:443#HK",
+            )
+        )
+        rows = set()
+
+        with (
+            patch.object(feed, "EXTRA_SOURCES", [source, source]),
+            patch.object(feed, "fetch_text", return_value=text),
+            patch.object(feed, "is_cloudflare_ip", return_value=False),
+        ):
+            feed.add_extra_source_rows(rows)
+
+        self.assertEqual(rows, {feed.ProxyRow("8.8.8.8", 443, "HK")})
+
+
 class LatencyModeTests(unittest.TestCase):
     def test_external_latency_enrichment_is_enabled_by_default(self):
         self.assertTrue(feed.ENABLE_CN_API_LATENCY)

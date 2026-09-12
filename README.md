@@ -5,6 +5,7 @@ Additional public sources are merged automatically:
 - `wanwushequ/ProxyIP` country Top10 lists (bare IPv4, default port `443`).
 - `xgonce/Cloudflare_IP/result.csv` (CSV with IP, port, and Cloudflare country).
 - `ymyuuu/IPDB/BestProxy/bestproxy&country.txt` (`IP#CC` format).
+- BestCF-listed country-tagged feeds from Junzhen, svip-s, love-ztm, cmliu, Tiancheng, and Fiatnorm.
 
 The extra-source parser accepts `IP:port`, bare `IP`, `IP#CC`, and the CSV format above. Sources that cannot be fetched are logged and skipped so one upstream outage does not stop the feed. The primary CFIP API is optional: when it is unavailable, the updater continues with the public sources and then the checked-in `all.txt` cache if needed. Generated files are left unchanged when no final rows pass validation or a refresh would remove a country already present in `raw.all`.
 
@@ -83,6 +84,7 @@ The default country/region scope is controlled by `APAC_CODES` in `fetch_apac.py
 Remote `EXTRA_SOURCES` can use `ip:port#CC`, BestCF-style text lines, or any line where the first usable candidate is `ip:port`.
 Cloudflare-owned IP ranges are excluded before candidates are written to `all.txt`.
 Extra-source rows without a detectable country/region are skipped by default.
+Loopback, private, link-local, multicast, unspecified, and otherwise non-global source addresses are skipped.
 By default, availability is checked with a Cloudflare-side ProxyIP check API (`PROXYIP_CHECK_API`).
 Every available candidate is measured by the configured mainland TCPing API before final ranking; candidates are
 not prefiltered by Cloudflare response time. The default `single` mode uses `CN_TCPING_API` with a controlled

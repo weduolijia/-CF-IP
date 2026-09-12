@@ -48,6 +48,7 @@ ALLOW_UNKNOWN_EXTRA_SOURCE_COUNTRY = os.environ.get("ALLOW_UNKNOWN_EXTRA_SOURCE_
 DEFAULT_EXTRA_SOURCES = [
     "https://zip.cm.edu.kg/all.txt",
     "https://bestcf.pages.dev/cmliu/all.txt",
+    "https://bestcf.pages.dev/cmliu2/all.txt",
     "https://bestcf.pages.dev/luoli/all.txt",
     "https://bestcf.pages.dev/s5gy/all.txt",
     "https://bestcf.pages.dev/lzj/all.txt",
@@ -65,6 +66,14 @@ DEFAULT_EXTRA_SOURCES = [
     "https://bestcf.pages.dev/cfyes/ipv4.txt",
     "https://bestcf.pages.dev/gslege/Cfxyz.txt",
     "https://cf.junzhen.qzz.io/best_ips.txt",
+    "https://cf.junzhen.qzz.io/best_ips_bj.txt",
+    "https://raw.githubusercontent.com/svip-s/cloudflare_ip/refs/heads/main/best_ips.txt",
+    "https://raw.githubusercontent.com/love-ztm/cfip/refs/heads/main/best_ips.txt",
+    "https://raw.githubusercontent.com/love-ztm/cfip/refs/heads/main/ubest_ips.txt",
+    "https://raw.githubusercontent.com/cmliu/WorkerVless2sub/refs/heads/main/addressesapi.txt",
+    "https://bestcf.pages.dev/tiancheng2/all.txt",
+    "https://bestcf.pages.dev/tiancheng3/all.txt",
+    "https://raw.githubusercontent.com/Fiatnorm/OptiDomain-Pages/refs/heads/main/optimized_cf_ips.txt",
     "https://bestcf.pages.dev/zhixuanwang/ipv4-onlyip.txt",
     # Additional BestIP feeds supplied by the user.
     "https://bestcf.pages.dev/vvhan/ipv4.txt",
@@ -320,6 +329,14 @@ def is_cloudflare_ip(ip):
     return any(address in network for network in networks)
 
 
+def is_non_public_source_ip(ip):
+    try:
+        address = ipaddress.ip_address(str(ip).strip())
+    except ValueError:
+        return True
+    return not address.is_global
+
+
 def add_row(rows, ip, port, country):
     try:
         port_number = int(str(port).strip())
@@ -430,6 +447,7 @@ def add_extra_source_rows(rows):
     for source in EXTRA_SOURCES:
         before = len(rows)
         skipped_cf = 0
+        skipped_non_public = 0
         skipped_region = 0
         try:
             text = fetch_text(source)
@@ -453,6 +471,9 @@ def add_extra_source_rows(rows):
             if not parsed:
                 continue
             ip, port, country = parsed
+            if is_non_public_source_ip(ip):
+                skipped_non_public += 1
+                continue
             if is_cloudflare_ip(ip):
                 skipped_cf += 1
                 continue
@@ -465,7 +486,8 @@ def add_extra_source_rows(rows):
             add_row(rows, ip, port, country)
         print(
             f"extra source {source}: +{len(rows) - before} target rows "
-            f"(skipped_cf={skipped_cf}, skipped_region={skipped_region})",
+            f"(skipped_non_public={skipped_non_public}, "
+            f"skipped_cf={skipped_cf}, skipped_region={skipped_region})",
             flush=True,
         )
 
