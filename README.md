@@ -71,7 +71,7 @@ SPEED_TEST_MODE=proxyip_api
 SPEED_TEST_TIMEOUT=30
 SPEED_TEST_WORKERS=20
 PROXYIP_CHECK_API=https://api.090227.xyz/check
-ENABLE_CN_API_LATENCY=1
+ENABLE_CN_API_LATENCY=0
 LATENCY_GROUP_MODE=single
 CN_TCPING_API=https://v2.xxapi.cn/api/tcping
 CN_TCPING_WORKERS=8
@@ -83,7 +83,7 @@ Remote `EXTRA_SOURCES` can use `ip:port#CC`, BestCF-style text lines, or any lin
 Cloudflare-owned IP ranges are excluded before candidates are written to `all.txt`.
 Extra-source rows without a detectable country/region are skipped by default.
 By default, availability is checked with a Cloudflare-side ProxyIP check API (`PROXYIP_CHECK_API`).
-After that, only rows that also return a latency from the configured TCPing API are kept. The default `single`
-mode uses `CN_TCPING_API` only; the optional `two` mode requires an explicit `LATENCY_API_B` and is intended
-for users who want a second independent latency source.
-Final ranking uses `cn_api_latency_ms` only, and final output is filtered again by the checked exit country/region.
+By default, external TCPing enrichment is disabled and final ranking uses the Cloudflare response time from the
+availability check. Set `ENABLE_CN_API_LATENCY=1` to opt in to TCPing enrichment. The optional `single` mode
+uses `CN_TCPING_API` only; `two` mode requires an explicit `LATENCY_API_B` for users who want a second
+independent latency source. Final output is filtered again by the checked exit country/region.

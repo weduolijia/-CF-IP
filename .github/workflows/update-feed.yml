@@ -11,6 +11,8 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
+    env:
+      ENABLE_CN_API_LATENCY: "0"
 
     steps:
       - name: Checkout

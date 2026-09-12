@@ -81,6 +81,20 @@ class FeedFallbackTests(unittest.TestCase):
 
 
 class LatencyModeTests(unittest.TestCase):
+    def test_external_latency_enrichment_is_disabled_by_default(self):
+        self.assertFalse(feed.ENABLE_CN_API_LATENCY)
+
+    def test_disabled_external_latency_keeps_cloudflare_measurements(self):
+        rows = [feed.ProbeResult("198.51.100.39", 443, "HK", 12, 999999)]
+        with (
+            patch.object(feed, "ENABLE_CN_API_LATENCY", False),
+            patch.object(feed, "test_latency_api") as test_latency_api,
+        ):
+            enriched = feed.enrich_cn_api_latencies(rows)
+
+        self.assertIs(enriched, rows)
+        test_latency_api.assert_not_called()
+
     def test_single_mode_uses_only_the_primary_latency_api(self):
         rows = [
             feed.ProbeResult("198.51.100.40", 443, "HK", 10, 999999),
@@ -101,6 +115,7 @@ class LatencyModeTests(unittest.TestCase):
             )
 
         with (
+            patch.object(feed, "ENABLE_CN_API_LATENCY", True),
             patch.object(feed, "LATENCY_GROUP_MODE", "single"),
             patch.object(feed, "CN_TCPING_API", "https://latency.example/api"),
             patch.object(feed, "test_latency_api", side_effect=fake_latency),
@@ -113,6 +128,7 @@ class LatencyModeTests(unittest.TestCase):
     def test_two_mode_requires_an_explicit_second_latency_api(self):
         row = feed.ProbeResult("198.51.100.42", 443, "HK", 10, 999999)
         with (
+            patch.object(feed, "ENABLE_CN_API_LATENCY", True),
             patch.object(feed, "LATENCY_GROUP_MODE", "two"),
             patch.object(feed, "LATENCY_API_B", ""),
         ):

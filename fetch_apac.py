@@ -26,7 +26,7 @@ SPEED_TEST_MODE = os.environ.get("SPEED_TEST_MODE", "proxyip_api")
 SPEED_TEST_TIMEOUT = float(os.environ.get("SPEED_TEST_TIMEOUT", "30"))
 SPEED_TEST_WORKERS = int(os.environ.get("SPEED_TEST_WORKERS", "20"))
 PROXYIP_CHECK_API = os.environ.get("PROXYIP_CHECK_API", "https://api.090227.xyz/check")
-ENABLE_CN_API_LATENCY = os.environ.get("ENABLE_CN_API_LATENCY", "1") != "0"
+ENABLE_CN_API_LATENCY = os.environ.get("ENABLE_CN_API_LATENCY", "0") != "0"
 CN_TCPING_API = os.environ.get("CN_TCPING_API", "https://v2.xxapi.cn/api/tcping")
 CN_TCPING_WORKERS = int(os.environ.get("CN_TCPING_WORKERS", "8"))
 CN_TCPING_TIMEOUT = float(os.environ.get("CN_TCPING_TIMEOUT", "15"))
@@ -634,7 +634,13 @@ def probe_candidates(rows):
 
 
 def enrich_cn_api_latencies(results):
-    if not ENABLE_CN_API_LATENCY or not results:
+    if not results:
+        return results
+    if not ENABLE_CN_API_LATENCY:
+        print(
+            "external TCPing latency enrichment disabled; ranking by Cloudflare response time",
+            flush=True,
+        )
         return results
 
     if LATENCY_GROUP_MODE == "single":
