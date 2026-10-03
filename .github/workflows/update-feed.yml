@@ -27,6 +27,10 @@ jobs:
       PROXYIP_CHECK_MODE: "dual"
       PROXYIP_CHECK_API_A: "https://api.090227.xyz/check"
       PROXYIP_CHECK_API_B: ${{ secrets.PROXYIP_CHECK_API_B }}
+      # A/B sharded: double the workers (each API still sees ~20 concurrent,
+      # same as the old single-API load), shorter per-request timeout.
+      SPEED_TEST_WORKERS: "40"
+      SPEED_TEST_TIMEOUT: "15"
       # Domestic latency: single API for now. jkapi zz_tcping was evaluated
       # 2026-10-03 as LATENCY_API_B but rejected: its single Ningbo Telecom
       # node fails ~75% of candidate IPs and tarpits under concurrency (a
