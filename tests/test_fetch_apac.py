@@ -148,6 +148,10 @@ class ExtraSourceTests(unittest.TestCase):
             "https://bestcf.pages.dev/tiancheng2/all.txt",
             "https://bestcf.pages.dev/tiancheng3/all.txt",
             "https://raw.githubusercontent.com/Fiatnorm/OptiDomain-Pages/refs/heads/main/optimized_cf_ips.txt",
+            "https://bestcf.pages.dev/tiancheng/tw.txt",
+            "https://bestcf.pages.dev/s5gy/hk.txt",
+            "https://bestcf.pages.dev/s5gy/sg.txt",
+            "https://bestcf.pages.dev/s5gy/jp.txt",
         }
 
         self.assertTrue(expected.issubset(set(feed.DEFAULT_EXTRA_SOURCES)))
