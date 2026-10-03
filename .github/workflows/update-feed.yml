@@ -16,6 +16,9 @@ jobs:
       CN_TCPING_WORKERS: "50"
       CN_TCPING_TIMEOUT: "8"
       CN_TCPING_MAX_QPS: "40"
+      # MO sources are currently dry; tolerate its temporary absence so the
+      # feed keeps updating. Remove once MO candidates recover.
+      TOLERATED_MISSING_COUNTRIES: "MO"
 
     steps:
       - name: Checkout
