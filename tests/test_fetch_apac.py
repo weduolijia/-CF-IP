@@ -314,3 +314,60 @@ class LatencyModeTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "LATENCY_API_B"):
                 feed.enrich_cn_api_latencies([row])
+
+
+class ProxyCheckDualModeTests(unittest.TestCase):
+    def _result(self, colo):
+        return feed.ProbeResult("198.51.100.10", 443, "HK", 100, 999999, colo=colo)
+
+    def _run(self, mode, api_b, side_effect):
+        row = feed.ProxyRow("198.51.100.10", 443, "HK")
+        with (
+            patch.object(feed, "PROXYIP_CHECK_MODE", mode),
+            patch.object(feed, "PROXYIP_CHECK_API_A", "https://a.example/check"),
+            patch.object(feed, "PROXYIP_CHECK_API_B", api_b),
+            patch.object(feed, "_query_check_api", side_effect=side_effect),
+        ):
+            return feed.test_proxyip_api_latency(row)
+
+    def test_dual_prefers_a_when_both_succeed(self):
+        result = self._run(
+            "dual",
+            "https://b.example/check",
+            lambda base, row: self._result("A") if base == "https://a.example/check" else self._result("B"),
+        )
+        self.assertEqual(result.colo, "A")
+
+    def test_dual_falls_back_to_b_when_a_fails(self):
+        result = self._run(
+            "dual",
+            "https://b.example/check",
+            lambda base, row: None if base == "https://a.example/check" else self._result("B"),
+        )
+        self.assertEqual(result.colo, "B")
+
+    def test_dual_returns_none_when_both_fail(self):
+        result = self._run("dual", "https://b.example/check", lambda base, row: None)
+        self.assertIsNone(result)
+
+    def test_dual_without_b_url_behaves_like_single(self):
+        seen = []
+
+        def fake(base, row):
+            seen.append(base)
+            return self._result("A")
+
+        result = self._run("single", "", fake)
+        self.assertEqual(result.colo, "A")
+        self.assertEqual(seen, ["https://a.example/check"])
+
+    def test_single_mode_ignores_b_url(self):
+        seen = []
+
+        def fake(base, row):
+            seen.append(base)
+            return self._result("A")
+
+        result = self._run("single", "https://b.example/check", fake)
+        self.assertEqual(result.colo, "A")
+        self.assertEqual(seen, ["https://a.example/check"])

@@ -27,6 +27,10 @@ SPEED_TEST_MODE = os.environ.get("SPEED_TEST_MODE", "proxyip_api")
 SPEED_TEST_TIMEOUT = float(os.environ.get("SPEED_TEST_TIMEOUT", "30"))
 SPEED_TEST_WORKERS = int(os.environ.get("SPEED_TEST_WORKERS", "20"))
 PROXYIP_CHECK_API = os.environ.get("PROXYIP_CHECK_API", "https://api.090227.xyz/check")
+# 可用性检测模式：single 只问 A 路；dual 并行问 A/B，任一成功即判有效（优先 A 的数据）
+PROXYIP_CHECK_MODE = os.environ.get("PROXYIP_CHECK_MODE", "single").strip().lower()
+PROXYIP_CHECK_API_A = os.environ.get("PROXYIP_CHECK_API_A", PROXYIP_CHECK_API).strip()
+PROXYIP_CHECK_API_B = os.environ.get("PROXYIP_CHECK_API_B", "").strip()
 ENABLE_CN_API_LATENCY = os.environ.get("ENABLE_CN_API_LATENCY", "1") != "0"
 CN_TCPING_API = os.environ.get("CN_TCPING_API", "https://v2.xxapi.cn/api/tcping")
 CN_TCPING_WORKERS = int(os.environ.get("CN_TCPING_WORKERS", "50"))
@@ -562,9 +566,9 @@ def test_tcp_latency(row):
     )
 
 
-def test_proxyip_api_latency(row):
+def _query_check_api(base_url, row):
     query = urllib.parse.urlencode({"proxyip": f"{row.ip}:{row.port}"})
-    url = f"{PROXYIP_CHECK_API}?{query}"
+    url = f"{base_url}?{query}"
     req = urllib.request.Request(url, headers={"User-Agent": "cfip-apac-feed/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=SPEED_TEST_TIMEOUT) as response:
@@ -595,6 +599,32 @@ def test_proxyip_api_latency(row):
         exit_asn=exit_asn,
         exit_org=exit_org,
     )
+
+
+def test_proxyip_api_latency(row):
+    """可用性检测入口：single 只问 A 路；dual 并行问 A/B，任一成功即判有效。
+
+    dual 下优先采用 A 路的数据（A 先成功则直接返回并尽力取消 B 路，
+    省一次 B 路调用）；A 失败则取 B 路结果；两路都失败返回 None。
+    """
+    if PROXYIP_CHECK_MODE != "dual" or not PROXYIP_CHECK_API_B:
+        return _query_check_api(PROXYIP_CHECK_API_A, row)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_a = pool.submit(_query_check_api, PROXYIP_CHECK_API_A, row)
+        future_b = pool.submit(_query_check_api, PROXYIP_CHECK_API_B, row)
+        result_b = None
+        for future in as_completed((future_a, future_b)):
+            try:
+                result = future.result()
+            except Exception:
+                result = None
+            if future is future_a:
+                if result is not None:
+                    future_b.cancel()
+                    return result
+            else:
+                result_b = result
+        return result_b
 
 
 def parse_latency_payload(payload, api_name="A"):

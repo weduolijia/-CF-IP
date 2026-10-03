@@ -19,6 +19,12 @@ jobs:
       # MO sources are currently dry; tolerate its temporary absence so the
       # feed keeps updating. Remove once MO candidates recover.
       TOLERATED_MISSING_COUNTRIES: "MO"
+      # Availability check: dual A/B in parallel. A = 090227 public API,
+      # B = self-hosted CF-Workers-CheckProxyIP (selfprobe-auth fork).
+      # B URL carries the worker API key -> stored as repo secret, never inline.
+      PROXYIP_CHECK_MODE: "dual"
+      PROXYIP_CHECK_API_A: "https://api.090227.xyz/check"
+      PROXYIP_CHECK_API_B: ${{ secrets.PROXYIP_CHECK_API_B }}
       # Domestic latency: single API for now. jkapi zz_tcping was evaluated
       # 2026-10-03 as LATENCY_API_B but rejected: its single Ningbo Telecom
       # node fails ~75% of candidate IPs and tarpits under concurrency (a
