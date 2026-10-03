@@ -45,6 +45,13 @@ CF_IPS_V4_URL = os.environ.get("CF_IPS_V4_URL", "https://www.cloudflare.com/ips-
 CF_IPS_V6_URL = os.environ.get("CF_IPS_V6_URL", "https://www.cloudflare.com/ips-v6")
 EXCLUDE_CLOUDFLARE_IPS = os.environ.get("EXCLUDE_CLOUDFLARE_IPS", "1") != "0"
 ALLOW_UNKNOWN_EXTRA_SOURCE_COUNTRY = os.environ.get("ALLOW_UNKNOWN_EXTRA_SOURCE_COUNTRY", "0") == "1"
+# Countries temporarily allowed to be absent from a refresh without blocking publish
+# (comma-separated, e.g. "MO"). Remove entries once the source recovers.
+TOLERATED_MISSING_COUNTRIES = {
+    part.strip().upper()
+    for part in os.environ.get("TOLERATED_MISSING_COUNTRIES", "").split(",")
+    if part.strip()
+}
 DEFAULT_EXTRA_SOURCES = [
     "https://zip.cm.edu.kg/all.txt",
     "https://bestcf.pages.dev/cmliu/all.txt",
@@ -962,10 +969,18 @@ def should_publish(top_results):
     existing_countries = output_countries(RAW_OUTPUT_PATH)
     refreshed_countries = {result.output_country for result in top_results}
     missing_countries = sorted(existing_countries - refreshed_countries)
-    if missing_countries:
+    tolerated = sorted(set(missing_countries) & TOLERATED_MISSING_COUNTRIES)
+    blocking = [country for country in missing_countries if country not in TOLERATED_MISSING_COUNTRIES]
+    if tolerated:
+        print(
+            f"note: tolerating temporarily missing countries ({', '.join(tolerated)}); "
+            "continuing with publish",
+            flush=True,
+        )
+    if blocking:
         print(
             "warning: refreshed output would drop published countries "
-            f"({', '.join(missing_countries)}); leaving existing feed files untouched",
+            f"({', '.join(blocking)}); leaving existing feed files untouched",
             flush=True,
         )
         return False
