@@ -31,6 +31,14 @@ PROXYIP_CHECK_API = os.environ.get("PROXYIP_CHECK_API", "https://api.090227.xyz/
 PROXYIP_CHECK_MODE = os.environ.get("PROXYIP_CHECK_MODE", "single").strip().lower()
 PROXYIP_CHECK_API_A = os.environ.get("PROXYIP_CHECK_API_A", PROXYIP_CHECK_API).strip()
 PROXYIP_CHECK_API_B = os.environ.get("PROXYIP_CHECK_API_B", "").strip()
+# 可用性检测统计（dual 模式：A-ok / B 兜底 ok / 两路都失败；single：ok / fail）
+_CHECK_STATS = {"a_ok": 0, "b_ok": 0, "both_fail": 0, "single_ok": 0, "single_fail": 0}
+_CHECK_STATS_LOCK = Lock()
+
+
+def _bump_check_stat(key):
+    with _CHECK_STATS_LOCK:
+        _CHECK_STATS[key] += 1
 ENABLE_CN_API_LATENCY = os.environ.get("ENABLE_CN_API_LATENCY", "1") != "0"
 CN_TCPING_API = os.environ.get("CN_TCPING_API", "https://v2.xxapi.cn/api/tcping")
 CN_TCPING_WORKERS = int(os.environ.get("CN_TCPING_WORKERS", "50"))
@@ -608,7 +616,9 @@ def test_proxyip_api_latency(row):
     省一次 B 路调用）；A 失败则取 B 路结果；两路都失败返回 None。
     """
     if PROXYIP_CHECK_MODE != "dual" or not PROXYIP_CHECK_API_B:
-        return _query_check_api(PROXYIP_CHECK_API_A, row)
+        result = _query_check_api(PROXYIP_CHECK_API_A, row)
+        _bump_check_stat("single_ok" if result is not None else "single_fail")
+        return result
     with ThreadPoolExecutor(max_workers=2) as pool:
         future_a = pool.submit(_query_check_api, PROXYIP_CHECK_API_A, row)
         future_b = pool.submit(_query_check_api, PROXYIP_CHECK_API_B, row)
@@ -621,9 +631,11 @@ def test_proxyip_api_latency(row):
             if future is future_a:
                 if result is not None:
                     future_b.cancel()
+                    _bump_check_stat("a_ok")
                     return result
             else:
                 result_b = result
+        _bump_check_stat("b_ok" if result_b is not None else "both_fail")
         return result_b
 
 
@@ -700,6 +712,22 @@ def probe_candidates(rows):
         f"(workers={SPEED_TEST_WORKERS}, timeout={SPEED_TEST_TIMEOUT}s)",
         flush=True,
     )
+    dual_check = (
+        SPEED_TEST_MODE == "proxyip_api"
+        and PROXYIP_CHECK_MODE == "dual"
+        and bool(PROXYIP_CHECK_API_B)
+    )
+    if SPEED_TEST_MODE == "proxyip_api":
+        # 注意：只打印 B 路是否已配置，不打印 URL（URL 里带 API key，属 secret）
+        print(
+            "availability check: "
+            + (
+                "dual A/B parallel (A=090227 public, B=self-hosted worker)"
+                if dual_check
+                else "single (A=090227 public)"
+            ),
+            flush=True,
+        )
     results = []
     with ThreadPoolExecutor(max_workers=SPEED_TEST_WORKERS) as executor:
         future_map = {executor.submit(test_candidate, row): row for row in rows}
@@ -711,6 +739,21 @@ def probe_candidates(rows):
                 results.append(result)
             if completed % 100 == 0 or completed == len(future_map):
                 print(f"  tested {completed}/{len(future_map)}, available={len(results)}", flush=True)
+    if SPEED_TEST_MODE == "proxyip_api":
+        with _CHECK_STATS_LOCK:
+            stats = dict(_CHECK_STATS)
+        if dual_check:
+            print(
+                f"  availability check stats: A-ok={stats['a_ok']}, "
+                f"B-fallback-ok={stats['b_ok']}, both-failed={stats['both_fail']}",
+                flush=True,
+            )
+        else:
+            print(
+                f"  availability check stats: ok={stats['single_ok']}, "
+                f"failed={stats['single_fail']}",
+                flush=True,
+            )
     return results
 
 
