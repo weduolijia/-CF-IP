@@ -8,6 +8,12 @@ on:
 permissions:
   contents: write
 
+# 手动 dispatch 可能撞上 6 小时定时任务：排队串行，避免两个 run 同时算 feed
+# 导致后推送的 auto-commit 因 non-fast-forward 被拒（2026-10-03 实测撞车过一次）。
+concurrency:
+  group: apac-feed-update
+  cancel-in-progress: false
+
 jobs:
   update:
     runs-on: ubuntu-latest
