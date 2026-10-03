@@ -19,6 +19,13 @@ jobs:
       # MO sources are currently dry; tolerate its temporary absence so the
       # feed keeps updating. Remove once MO candidates recover.
       TOLERATED_MISSING_COUNTRIES: "MO"
+      # Domestic latency: split candidates across two independent APIs so the
+      # feed survives either one dying. Group A = xxapi.cn (JSON), group B =
+      # jkapi zz_tcping (plain text, "平均延迟: X ms"), no key required.
+      LATENCY_GROUP_MODE: "two"
+      LATENCY_API_B: "https://jkapi.com/api/zz_tcping"
+      LATENCY_WORKERS_A: "25"
+      LATENCY_WORKERS_B: "8"
 
     steps:
       - name: Checkout
