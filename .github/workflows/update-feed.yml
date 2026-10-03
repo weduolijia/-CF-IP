@@ -19,13 +19,13 @@ jobs:
       # MO sources are currently dry; tolerate its temporary absence so the
       # feed keeps updating. Remove once MO candidates recover.
       TOLERATED_MISSING_COUNTRIES: "MO"
-      # Domestic latency: split candidates across two independent APIs so the
-      # feed survives either one dying. Group A = xxapi.cn (JSON), group B =
-      # jkapi zz_tcping (plain text, "平均延迟: X ms"), no key required.
-      LATENCY_GROUP_MODE: "two"
-      LATENCY_API_B: "https://jkapi.com/api/zz_tcping"
-      LATENCY_WORKERS_A: "25"
-      LATENCY_WORKERS_B: "8"
+      # Domestic latency: single API for now. jkapi zz_tcping was evaluated
+      # 2026-10-03 as LATENCY_API_B but rejected: its single Ningbo Telecom
+      # node fails ~75% of candidate IPs and tarpits under concurrency (a
+      # two-mode run hung 50+ min in the latency stage and had to be
+      # cancelled). See antping.com (JWT+WS, multi-ISP) as a future stronger
+      # backup candidate.
+      LATENCY_GROUP_MODE: "single"
 
     steps:
       - name: Checkout
