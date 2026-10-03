@@ -79,6 +79,62 @@ class FeedFallbackTests(unittest.TestCase):
         write_lines.assert_not_called()
         write_json.assert_not_called()
 
+    def test_main_publishes_when_only_tolerated_countries_are_missing(self):
+        result = feed.ProbeResult(
+            ip="198.51.100.30",
+            port=443,
+            country="HK",
+            cf_latency_ms=10,
+            score=10,
+            exit_country="HK",
+            cn_api_latency_ms=10,
+        )
+        with (
+            patch.object(
+                feed,
+                "collect_rows",
+                return_value=({feed.ProxyRow("198.51.100.30", 443, "HK")}, None),
+            ),
+            patch.object(feed, "probe_candidates", return_value=[result]),
+            patch.object(feed, "enrich_cn_api_latencies", side_effect=lambda results: results),
+            patch.object(feed, "output_countries", return_value={"HK", "MO"}),
+            patch.object(feed, "TOLERATED_MISSING_COUNTRIES", {"MO"}),
+            patch.object(feed, "write_lines") as write_lines,
+            patch.object(feed, "write_json") as write_json,
+        ):
+            feed.main()
+
+        write_lines.assert_called()
+        write_json.assert_called()
+
+    def test_main_still_blocks_when_untolerated_countries_are_missing(self):
+        result = feed.ProbeResult(
+            ip="198.51.100.30",
+            port=443,
+            country="HK",
+            cf_latency_ms=10,
+            score=10,
+            exit_country="HK",
+            cn_api_latency_ms=10,
+        )
+        with (
+            patch.object(
+                feed,
+                "collect_rows",
+                return_value=({feed.ProxyRow("198.51.100.30", 443, "HK")}, None),
+            ),
+            patch.object(feed, "probe_candidates", return_value=[result]),
+            patch.object(feed, "enrich_cn_api_latencies", side_effect=lambda results: results),
+            patch.object(feed, "output_countries", return_value={"HK", "MO", "JP"}),
+            patch.object(feed, "TOLERATED_MISSING_COUNTRIES", {"MO"}),
+            patch.object(feed, "write_lines") as write_lines,
+            patch.object(feed, "write_json") as write_json,
+        ):
+            feed.main()
+
+        write_lines.assert_not_called()
+        write_json.assert_not_called()
+
 
 class ExtraSourceTests(unittest.TestCase):
     def test_bestcf_page_sources_are_present_without_duplicate_urls(self):
