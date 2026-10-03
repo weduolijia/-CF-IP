@@ -93,6 +93,16 @@ DEFAULT_EXTRA_SOURCES = [
     "https://bestcf.pages.dev/s5gy/sg.txt",
     "https://bestcf.pages.dev/s5gy/jp.txt",
     "https://bestcf.pages.dev/s5gy/us.txt",
+    # Xiaobei09/proxyip per-country downloads (verified 2026-10-03: 0%
+    # official Cloudflare ranges; includes a dedicated MO feed).
+    "https://raw.githubusercontent.com/Xiaobei09/proxyip/main/data/download/countries/MO.txt",
+    "https://raw.githubusercontent.com/Xiaobei09/proxyip/main/data/download/countries/HK.txt",
+    "https://raw.githubusercontent.com/Xiaobei09/proxyip/main/data/download/countries/SG.txt",
+    "https://raw.githubusercontent.com/Xiaobei09/proxyip/main/data/download/countries/TW.txt",
+    "https://raw.githubusercontent.com/Xiaobei09/proxyip/main/data/download/countries/JP.txt",
+    "https://raw.githubusercontent.com/Xiaobei09/proxyip/main/data/download/countries/KR.txt",
+    "https://raw.githubusercontent.com/Xiaobei09/proxyip/main/data/download/countries/MY.txt",
+    "https://raw.githubusercontent.com/Xiaobei09/proxyip/main/data/download/countries/US.txt",
     # Additional public feeds: country-tagged ProxyIP lists, CSV results,
     # and IPDB's country-aware proxy list.
     "https://raw.githubusercontent.com/wanwushequ/ProxyIP/main/HK-TOP10.txt",
