@@ -64,6 +64,7 @@ CFIP_LIMIT=10000
 # EXTRA_SOURCES=<comma-separated URLs of extra ip:port feeds>
 EXCLUDE_CLOUDFLARE_IPS=1
 ALLOW_UNKNOWN_EXTRA_SOURCE_COUNTRY=0
+TOLERATED_MISSING_COUNTRIES=  (comma-separated codes, e.g. MO, temporarily allowed to be absent from a refresh)
 CF_IPS_V4_URL=https://www.cloudflare.com/ips-v4
 CF_IPS_V6_URL=https://www.cloudflare.com/ips-v6
 TOP_PER_COUNTRY=10
