@@ -152,6 +152,7 @@ class ExtraSourceTests(unittest.TestCase):
             "https://bestcf.pages.dev/s5gy/hk.txt",
             "https://bestcf.pages.dev/s5gy/sg.txt",
             "https://bestcf.pages.dev/s5gy/jp.txt",
+            "https://raw.githubusercontent.com/Xiaobei09/proxyip/main/data/download/countries/MO.txt",
         }
 
         self.assertTrue(expected.issubset(set(feed.DEFAULT_EXTRA_SOURCES)))
