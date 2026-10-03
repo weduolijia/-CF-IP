@@ -9,6 +9,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -27,7 +28,8 @@ SPEED_TEST_MODE = os.environ.get("SPEED_TEST_MODE", "proxyip_api")
 SPEED_TEST_TIMEOUT = float(os.environ.get("SPEED_TEST_TIMEOUT", "30"))
 SPEED_TEST_WORKERS = int(os.environ.get("SPEED_TEST_WORKERS", "20"))
 PROXYIP_CHECK_API = os.environ.get("PROXYIP_CHECK_API", "https://api.090227.xyz/check")
-# 可用性检测模式：single 只问 A 路；dual 并行问 A/B，任一成功即判有效（优先 A 的数据）
+# 可用性检测模式：single 只问 A 路；dual 按候选稳定分片，一半主查 A、一半主查 B，
+# 主查失败时用另一路兜底（两路都失败才判无效）
 PROXYIP_CHECK_MODE = os.environ.get("PROXYIP_CHECK_MODE", "single").strip().lower()
 PROXYIP_CHECK_API_A = os.environ.get("PROXYIP_CHECK_API_A", PROXYIP_CHECK_API).strip()
 PROXYIP_CHECK_API_B = os.environ.get("PROXYIP_CHECK_API_B", "").strip()
@@ -609,34 +611,28 @@ def _query_check_api(base_url, row):
     )
 
 
-def test_proxyip_api_latency(row):
-    """可用性检测入口：single 只问 A 路；dual 并行问 A/B，任一成功即判有效。
+def _check_shard_index(row):
+    """可用性检测的分片序号（0 或 1）：按 ip:port 的 crc32 奇偶决定，保证每次运行分片稳定一致。"""
+    return zlib.crc32(f"{row.ip}:{row.port}".encode()) & 1
 
-    dual 下优先采用 A 路的数据（A 先成功则直接返回并尽力取消 B 路，
-    省一次 B 路调用）；A 失败则取 B 路结果；两路都失败返回 None。
-    """
+
+def test_proxyip_api_latency(row):
+    """可用性检测入口：single 只问 A 路；dual 按分片主查 A/B，失败时另一路兜底。"""
     if PROXYIP_CHECK_MODE != "dual" or not PROXYIP_CHECK_API_B:
         result = _query_check_api(PROXYIP_CHECK_API_A, row)
         _bump_check_stat("single_ok" if result is not None else "single_fail")
         return result
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        future_a = pool.submit(_query_check_api, PROXYIP_CHECK_API_A, row)
-        future_b = pool.submit(_query_check_api, PROXYIP_CHECK_API_B, row)
-        result_b = None
-        for future in as_completed((future_a, future_b)):
-            try:
-                result = future.result()
-            except Exception:
-                result = None
-            if future is future_a:
-                if result is not None:
-                    future_b.cancel()
-                    _bump_check_stat("a_ok")
-                    return result
-            else:
-                result_b = result
-        _bump_check_stat("b_ok" if result_b is not None else "both_fail")
-        return result_b
+    if _check_shard_index(row) == 0:
+        apis = (PROXYIP_CHECK_API_A, PROXYIP_CHECK_API_B)
+    else:
+        apis = (PROXYIP_CHECK_API_B, PROXYIP_CHECK_API_A)
+    for api in apis:
+        result = _query_check_api(api, row)
+        if result is not None:
+            _bump_check_stat("a_ok" if api == PROXYIP_CHECK_API_A else "b_ok")
+            return result
+    _bump_check_stat("both_fail")
+    return None
 
 
 def parse_latency_payload(payload, api_name="A"):
@@ -722,7 +718,8 @@ def probe_candidates(rows):
         print(
             "availability check: "
             + (
-                "dual A/B parallel (A=090227 public, B=self-hosted worker)"
+                "dual-shard A/B (stable split, fallback on failure; "
+                "A=090227 public, B=self-hosted worker)"
                 if dual_check
                 else "single (A=090227 public)"
             ),
@@ -745,7 +742,7 @@ def probe_candidates(rows):
         if dual_check:
             print(
                 f"  availability check stats: A-ok={stats['a_ok']}, "
-                f"B-fallback-ok={stats['b_ok']}, both-failed={stats['both_fail']}",
+                f"B-ok={stats['b_ok']}, both-failed={stats['both_fail']}",
                 flush=True,
             )
         else:
